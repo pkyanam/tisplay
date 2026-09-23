@@ -3,7 +3,7 @@
 View and control a computer's primary desktop from a terminal, including over SSH. Install on the computer whose desktop you want to use:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/pkyanam/tisplay/main/install.sh | bash
+curl -fsSL https://github.com/pkyanam/tisplay/raw/refs/heads/main/install.sh | bash
 ```
 
 Then run it locally with `tisplay`, or connect from another computer with:
