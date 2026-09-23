@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tisplay"
+version = "0.1.0"
+description = "Interactive remote desktop streaming over a terminal or SSH"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = ["mss>=9", "Pillow>=10", "pynput>=1.7"]
+
+[project.optional-dependencies]
+linux = ["python-xlib>=0.33"]
+
+[project.scripts]
+tisplay = "tisplay.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
