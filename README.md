@@ -34,15 +34,15 @@ Press `q` or `Ctrl-C` to leave. Keyboard input, clicks, pointer movement, and wh
 
 ## Use over SSH
 
-For Cmux or another Kitty-graphics terminal, the remote side receives the same inline graphics protocol over the SSH session. If auto-detection picks ANSI, try `ssh -t user@computer 'tisplay --graphics kitty'`. The SSH client terminal must itself support Kitty graphics for full-resolution output; otherwise force ANSI. Mouse reporting must be enabled by the local terminal, as it is in Cmux.
+For Cmux or another Kitty-graphics terminal, the remote side receives the same inline graphics protocol over the SSH session. If auto-detection picks ANSI, try `ssh -t user@computer '~/.local/bin/tisplay --graphics kitty'`. The SSH client terminal must itself support Kitty graphics for full-resolution output; otherwise force ANSI. Mouse reporting must be enabled by the local terminal, as it is in Cmux.
 
 ## Headless Linux
 
 `--virtual` starts a private Xvfb screen and Openbox, then opens xterm as a usable desktop by default. The installer installs these system dependencies. To launch a different application instead:
 
 ```sh
-ssh -t user@server 'tisplay --virtual -- firefox --no-remote'
-ssh -t user@server 'tisplay --virtual --width 1600 --height 900 -- xfce4-session'
+ssh -t user@server '~/.local/bin/tisplay --virtual -- firefox --no-remote'
+ssh -t user@server '~/.local/bin/tisplay --virtual --width 1600 --height 900 -- xfce4-session'
 ```
 
 The virtual desktop and launched command stop when `tisplay` exits. Linux Wayland capture is not currently supported directly; use an X11 session or `--virtual`. macOS has no virtual-display mode and needs an active logged-in desktop.
