@@ -40,7 +40,7 @@ if [ "$OS" = Linux ]; then
   case "$PKG" in
     apt-get) $SUDO apt-get update; $SUDO apt-get install -y "${PACKAGES[@]}" ;;
     dnf|yum) $SUDO "$PKG" install -y "${PACKAGES[@]}" ;;
-    pacman) $SUDO pacman -Sy --needed --noconfirm "${PACKAGES[@]}" ;;
+    pacman) $SUDO pacman -S --needed --noconfirm "${PACKAGES[@]}" ;;
     zypper) $SUDO zypper --non-interactive install "${PACKAGES[@]}" ;;
   esac
 elif [ "$OS" = Darwin ]; then

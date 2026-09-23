@@ -9,13 +9,13 @@ curl -fsSL https://raw.githubusercontent.com/pkyanam/tisplay/main/install.sh | b
 Then run it locally with `tisplay`, or connect from another computer with:
 
 ```sh
-ssh -t user@computer tisplay
+ssh -t user@computer '~/.local/bin/tisplay'
 ```
 
-If SSH reports `tisplay: command not found`, use its install path directly:
+Or add `~/.local/bin` to the remote account's `PATH` and run `tisplay`:
 
 ```sh
-ssh -t user@computer '~/.local/bin/tisplay'
+ssh -t user@computer 'PATH="$HOME/.local/bin:$PATH" tisplay'
 ```
 
 The installer puts the command in `~/.local/bin` and installs missing system and Python dependencies. Linux gets X11 input support plus Xvfb, Openbox, and xterm for headless use. On macOS, use a logged-in desktop and grant your terminal or Python **Screen Recording** and **Accessibility** permissions when prompted. `--virtual` is for headless Linux only.
