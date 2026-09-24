@@ -20,17 +20,30 @@ def test_top_level_help_aliases_show_command_menu(flag, monkeypatch, capsys):
     assert "--skill" in output
 
 
-def test_bundled_skill_is_printed_offline(monkeypatch, capsys):
+def test_bundled_skill_is_printed_offline():
+    import os
+    import subprocess
     from pathlib import Path
 
     expected = Path(__file__).parents[1].joinpath("src", "tisplay", "SKILL.md").read_text()
-    monkeypatch.setattr(sys, "argv", ["tisplay", "--skill"])
-    with pytest.raises(SystemExit) as result:
-        cli.main()
-    assert result.value.code == 0
-    assert capsys.readouterr().out == expected
-    assert "tisplay.capture" not in sys.modules
-    assert "tisplay.daemon" not in sys.modules
+    script = r"""
+import importlib.abc, sys
+class BlockDesktopImports(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in {'tisplay.capture', 'tisplay.terminal', 'tisplay.daemon'}:
+            raise AssertionError('unexpected desktop import: ' + fullname)
+sys.meta_path.insert(0, BlockDesktopImports())
+sys.argv = ['tisplay', '--skill']
+from tisplay.cli import main
+try:
+    main()
+except SystemExit as error:
+    if error.code != 0: raise
+"""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join([str(Path(__file__).parents[1] / "src"), env.get("PYTHONPATH", "")])
+    completed = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=env, check=True)
+    assert completed.stdout == expected
 
 
 @pytest.mark.parametrize("argv,expected", [
@@ -53,6 +66,13 @@ def test_parser_accepts_host_prefix_and_command_after_double_dash():
     assert args.host == "user@pi"
     assert args.name == "work"
     assert args.command == ["--", "xterm"]
+
+
+def test_attach_accepts_explicit_lossy_stream_quality():
+    args = agent_cli.build_parser().parse_args([
+        "attach", "--session", "s1", "--stream-quality", "low"
+    ])
+    assert args.stream_quality == "low"
 
 
 def test_drag_cli_action_uses_engine_coordinate_contract():
@@ -153,6 +173,19 @@ def test_view_only_attach_controller_never_queues_input():
     controller.button("left", True, 1, 2)
     controller.flush()
     controller.close()
+
+
+def test_attach_orphan_mouse_release_does_not_become_a_click():
+    calls = []
+
+    class FakeClient:
+        def input(self, session, actions, **kwargs):
+            calls.append(actions)
+
+    controller = agent_cli._AttachController(FakeClient(), "s1")
+    controller.button("left", False, 0, 0)
+    controller.flush()
+    assert calls == []
 
 
 def test_open_url_command_preserves_owner(monkeypatch, capsys):

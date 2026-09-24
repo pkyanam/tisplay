@@ -59,7 +59,9 @@ class Screen:
             shot = self.grabber.grab(self.monitor)
         except Exception as exc:
             raise DesktopError(f"Screen capture failed: {exc}") from exc
-        image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+        # MSS exposes the captured mutable BGRA buffer as ``raw``. Feeding it
+        # directly avoids the extra full-frame bytes copy made by ``shot.bgra``.
+        image = Image.frombytes("RGB", shot.size, shot.raw, "raw", "BGRX")
         if max_width is not None and image.width > max_width:
             height = max(1, round(image.height * max_width / image.width))
             image = image.resize((max_width, height), Image.Resampling.LANCZOS)
@@ -143,7 +145,14 @@ class XTestController:
         root = self.display.screen().root
         root.warp_pointer(x - self.display.screen().root.get_geometry().x, y - self.display.screen().root.get_geometry().y)
         number = {"left": 1, "middle": 2, "right": 3, "wheel_up": 4, "wheel_down": 5}.get(name)
-        if number:
+        if number in (4, 5):
+            # X11 wheel buttons are discrete pulses. Releasing buttons 4/5 is
+            # required to generate the next wheel event; leaving them pressed
+            # can also make later pointer input appear stuck in some clients.
+            if down:
+                self.xtest.fake_input(self.display, self.X.ButtonPress, number)
+                self.xtest.fake_input(self.display, self.X.ButtonRelease, number)
+        elif number:
             self.xtest.fake_input(self.display, self.X.ButtonPress if down else self.X.ButtonRelease, number)
         self.display.flush()
 

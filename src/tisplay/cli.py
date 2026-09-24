@@ -56,6 +56,18 @@ def detect_graphics() -> str:
     return "ansi"
 
 
+def discover_accessible_x11_display() -> str | None:
+    """Load the X11 probe only when startup needs a local desktop."""
+    from .capture import discover_accessible_x11_display as discover
+    return discover()
+
+
+def VirtualDisplay(*args: object, **kwargs: object) -> object:
+    """Construct Xvfb lazily so skill/help paths do not import display code."""
+    from .capture import VirtualDisplay as Display
+    return Display(*args, **kwargs)
+
+
 def kitty_probe() -> bool:
     """Query the terminal protocol, retaining any keys pressed during the probe."""
     query = b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c"
@@ -254,7 +266,12 @@ def process_input(buffer: bytearray, controller: object, screen: Screen, cols: i
                     nx = (x - 1) / max(1, cols - 1)
                     ny = (y - 1) / max(1, rows - 1)
                 left, top, box_width, box_height = content_box
-                if not (left <= nx <= left + box_width and top <= ny <= top + box_height):
+                # Releases must reach the desktop even when the pointer has
+                # left the letterboxed image. Dropping that event leaves the
+                # native button held until another release or disconnect.
+                is_release = seq[-1:] == b"m"
+                inside_content = left <= nx <= left + box_width and top <= ny <= top + box_height
+                if not inside_content and not is_release:
                     continue
                 fx = min(1.0, max(0.0, (nx - left) / max(0.0001, box_width)))
                 fy = min(1.0, max(0.0, (ny - top) / max(0.0001, box_height)))
@@ -304,6 +321,7 @@ def process_input(buffer: bytearray, controller: object, screen: Screen, cols: i
 @contextmanager
 def startup_display(args: argparse.Namespace):
     """Select a reachable local X11 display, falling back to private Xvfb."""
+    from .capture import DesktopError
     original_display = os.environ.get("DISPLAY")
     auto_virtual = False
     discovered_display = None
@@ -351,8 +369,8 @@ def startup_display(args: argparse.Namespace):
 
 
 def run(args: argparse.Namespace) -> int:
-    from .capture import DesktopError, Screen, VirtualDisplay, discover_accessible_x11_display, make_controller
-    from .terminal import KittyRenderer, Terminal, begin_terminal, render_blocks, terminal_size
+    from .capture import DesktopError, Screen, VirtualDisplay, make_controller
+    from .terminal import KittyRenderer, Terminal, begin_terminal, render_blocks, terminal_size, write_all
 
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise DesktopError("tisplay needs an interactive terminal. Over SSH, connect with `ssh -t host tisplay`.")
@@ -379,7 +397,7 @@ def run(args: argparse.Namespace) -> int:
         else:
             screen, controller = Screen(allow_wayland=use_virtual), make_controller()
         fps, max_width, compression_level, _, _ = resolve_performance(args.preset, args.fps, args.max_width, args.width, args.height)
-        kitty_renderer = KittyRenderer(compression_level=compression_level)
+        kitty_renderer = KittyRenderer(compression_level=compression_level, stream_quality=args.stream_quality)
         pending = bytearray()
         escape_since = None
         old_winch = signal.getsignal(signal.SIGWINCH)
@@ -408,7 +426,7 @@ def run(args: argparse.Namespace) -> int:
                                 rendered, content_box = fit_ansi(frame, cols, rows)
                                 data = render_blocks(rendered)
                             if data:
-                                os.write(sys.stdout.fileno(), data)
+                                write_all(sys.stdout.fileno(), data)
                             next_frame = now + 1.0 / fps
                         timeout = max(0, min(0.025, next_frame - time.monotonic()))
                         ready, _, _ = select.select([sys.stdin.fileno()], [], [], timeout)
@@ -432,7 +450,7 @@ def run(args: argparse.Namespace) -> int:
                 finally:
                     cleanup = kitty_renderer.close()
                     if cleanup:
-                        os.write(sys.stdout.fileno(), cleanup)
+                        write_all(sys.stdout.fileno(), cleanup)
         finally:
             controller.close()
             signal.signal(signal.SIGWINCH, old_winch)
@@ -482,6 +500,8 @@ def main() -> None:
     parser.add_argument("--graphics", choices=("auto", "kitty", "ansi"), default="auto", help="auto-detect Kitty graphics, or force a renderer")
     parser.add_argument("--preset", choices=tuple(PRESETS), default="balanced", help="quality keeps source resolution, balanced targets 60 fps, fast reduces capture and bandwidth (default: balanced)")
     parser.add_argument("--fps", type=float, default=None, help="refresh target (default comes from --preset; up to 60)")
+    parser.add_argument("--stream-quality", choices=("lossless", "high", "medium", "low"), default="lossless",
+                        help="Kitty stream color precision; lower quality can reduce bandwidth (default: lossless)")
     parser.add_argument("--max-width", type=int, default=None, help="capture width cap in pixels (default comes from --preset; quality has no cap)")
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--native", dest="mode", action="store_const", const="native-existing", help="require the active desktop; never fall back")

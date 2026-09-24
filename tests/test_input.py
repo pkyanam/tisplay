@@ -1,4 +1,6 @@
 from tisplay.cli import process_input
+from tisplay.capture import XTestController
+from types import SimpleNamespace
 
 
 class FakeScreen:
@@ -8,12 +10,13 @@ class FakeScreen:
 class RecordingController:
     def __init__(self):
         self.keys = []
+        self.buttons = []
 
     def key(self, name, down):
         self.keys.append((name, down))
 
     def button(self, *args):
-        pass
+        self.buttons.append(args)
 
 
 def parse(data):
@@ -58,3 +61,39 @@ def test_ctrl_c_is_forwarded_but_ctrl_right_bracket_quits():
     assert running
     assert keys == [("ctrl", True), ("c", True), ("c", False), ("ctrl", False)]
     assert not parse(b"\x1d")[0]
+
+
+def test_mouse_release_outside_letterboxed_image_is_still_forwarded():
+    controller = RecordingController()
+    data = bytearray(b"\x1b[<0;40;12M\x1b[<0;1;1m")
+    process_input(data, controller, FakeScreen(), 80, 24, "kitty", (0.0, 0.25, 1.0, 0.5))
+    assert controller.buttons[0][0] == "left"
+    assert controller.buttons[0][1] is True
+    assert controller.buttons[-1][0] == "left"
+    assert controller.buttons[-1][1] is False
+
+
+def test_xtest_wheel_buttons_are_pulsed_and_do_not_remain_held():
+    events = []
+
+    class Root:
+        def warp_pointer(self, *_args):
+            pass
+
+        def get_geometry(self):
+            return SimpleNamespace(x=0, y=0)
+
+    class Display:
+        def screen(self):
+            return SimpleNamespace(root=Root())
+
+        def flush(self):
+            pass
+
+    controller = XTestController.__new__(XTestController)
+    controller.display = Display()
+    controller.X = SimpleNamespace(ButtonPress="press", ButtonRelease="release")
+    controller.xtest = SimpleNamespace(fake_input=lambda _display, event, button: events.append((event, button)))
+    controller.button("wheel_up", True, 10, 20)
+    controller.button("wheel_up", False, 10, 20)
+    assert events == [("press", 4), ("release", 4)]

@@ -76,9 +76,9 @@ Kitty Graphics Protocol terminals, including Ghostty-based Cmux, show full-color
 
 ## Presets
 
-The default `balanced` preset targets up to 60 fps, starts a 1600×900 virtual desktop, and caps Kitty capture at 1600 pixels wide. `quality` starts a 1920×1080 virtual desktop, keeps the source resolution, and uses stronger lossless compression. `fast` starts a 1280×800 virtual desktop, caps capture at 960 pixels wide, and targets 30 fps.
+The default `balanced` preset targets up to 60 fps, starts a 1600×900 virtual desktop, and caps Kitty capture at 1600 pixels wide. `quality` starts a 1920×1080 virtual desktop, keeps the source resolution, and uses stronger lossless compression. `fast` starts a 1280×800 virtual desktop, caps capture at 960 pixels wide, and targets 30 fps. Kitty output is lossless by default; `--stream-quality high|medium|low` reduces RGB precision to lower frame size and CPU/network time, at a visible color-detail cost. The levels retain 7, 6, or 5 bits per color channel (lossless retains all 8 bits). For example, try `tisplay --preset balanced --stream-quality low`, or `tisplay attach --session ID --fps 60 --stream-quality low`. In a synthetic 1600×900 encode-only benchmark, low averaged 16.8 ms and 690 KiB per frame versus 21.2 ms and 1,348 KiB lossless; capture, SSH, and terminal rendering are excluded. This can help bandwidth-bound links, but does not guarantee 60 fps when another stage is the bottleneck.
 
-These are starting values: explicit `--fps`, `--max-width`, `--width`, and `--height` options override them. The refresh rate is a target; capture speed, desktop motion, compression, terminal redraws, and SSH bandwidth determine the delivered rate. Frames do not queue behind slow output, so input remains responsive. Compression changes CPU use and bandwidth, not image fidelity.
+These are starting values: explicit `--fps`, `--max-width`, `--width`, and `--height` options override them. The refresh rate is a target; capture speed, desktop motion, compression, terminal redraws, and SSH bandwidth determine the delivered rate. The loop does not queue multiple frames, but slow capture or terminal writes can still delay input. Lossless zlib settings trade CPU time for bandwidth; `--stream-quality` trades color precision for smaller Kitty frames.
 
 ## Options
 
@@ -87,6 +87,7 @@ These are starting values: explicit `--fps`, `--max-width`, `--width`, and `--he
 --preset quality|balanced|fast performance and resolution defaults (default: balanced)
 --fps N                     refresh target, 1 to 60 (default comes from preset)
 --max-width PX              capture width cap (default comes from preset)
+--stream-quality MODE       lossless (default), high, medium, or low Kitty color precision
 --virtual                   force a full Xfce desktop on Xvfb (Linux)
 --native                    require a supported existing native desktop
 --native-headless           use an isolated headless Wayland desktop

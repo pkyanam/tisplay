@@ -66,8 +66,13 @@ def timed(callable_, count: int = 7) -> tuple[float, int]:
 def main() -> None:
     frames = [detailed_frame(motion=i) for i in range(8)]
     print(f"Desktop-like test frames: {frames[0].width}x{frames[0].height}, motion changes each frame")
-    for name, level in (("balanced zlib-1", 1), ("quality zlib-6", 6)):
-        renderer = KittyRenderer(first_image_id=100, compression_level=level)
+    for name, quality, level in (
+        ("lossless zlib-1", "lossless", 1),
+        ("high 7-bit zlib-1", "high", 1),
+        ("medium 6-bit zlib-1", "medium", 1),
+        ("low 5-bit zlib-1", "low", 1),
+    ):
+        renderer = KittyRenderer(first_image_id=100, compression_level=level, stream_quality=quality)
         seconds, size = timed(lambda i: renderer.render(frames[i], 100, 35))
         print(f"{name}: {seconds * 1000:.2f} ms/frame, {size / 1024:.1f} KiB/frame, "
               f"{size * 8 / seconds / 1e6:.1f} Mbit/s encode throughput; "

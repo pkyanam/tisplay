@@ -7,7 +7,7 @@ from PIL import Image
 
 from tisplay import cli
 from tisplay.cli import fit_kitty, process_input, resize_for_ansi
-from tisplay.terminal import KittyRenderer, render_blocks, render_kitty
+from tisplay.terminal import KittyRenderer, render_blocks, render_kitty, write_all
 
 
 class FakeScreen:
@@ -104,6 +104,26 @@ def test_terminal_pixel_size_reads_pty_dimensions(monkeypatch):
     monkeypatch.setattr(cli.sys, "stdout", Stdout())
     monkeypatch.setattr(cli.fcntl, "ioctl", fake_ioctl)
     assert cli.terminal_pixel_size() == (1920, 1080)
+
+
+def test_write_all_retries_interrupted_and_partial_terminal_writes(monkeypatch):
+    import tisplay.terminal as terminal
+
+    pieces = []
+    interrupted = False
+
+    def partial_write(fd, data):
+        nonlocal interrupted
+        if not interrupted:
+            interrupted = True
+            raise InterruptedError()
+        chunk = bytes(data[:3])
+        pieces.append(chunk)
+        return len(chunk)
+
+    monkeypatch.setattr(terminal.os, "write", partial_write)
+    write_all(9, b"a large terminal frame")
+    assert b"".join(pieces) == b"a large terminal frame"
 
 
 def test_input_forwards_keys_click_and_pointer_motion():

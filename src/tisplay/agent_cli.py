@@ -70,14 +70,16 @@ UPDATES
 
 PERFORMANCE
   `--preset quality|balanced|fast` controls capture defaults; explicit size or
-  frame-rate options override the preset. `attach` needs an interactive TTY.
+  frame-rate options override the preset. `--stream-quality` trades image color
+  precision for smaller Kitty frames; its default is lossless. `attach` needs an interactive TTY.
   Remote control requires SSH access and Python on the remote host. A virtual
   desktop requires the Linux Xvfb/Xfce dependencies installed by install.sh.
 
 INTERACTIVE MODE
   `tisplay --native --preset balanced` opens a terminal viewer on the active desktop.
   Options for that mode: --graphics auto|kitty|ansi, --preset quality|balanced|
-  fast, --fps N, --max-width PIXELS, --native, --native-headless, --virtual,
+  fast, --fps N, --max-width PIXELS, --stream-quality lossless|high|medium|low,
+  --native, --native-headless, --virtual,
   --test-pattern, --width PIXELS,
   and --height PIXELS. Add `-- command [args...]` to launch a program inside a
   private virtual desktop. Use `Ctrl-]` to disconnect from an attached session.
@@ -232,6 +234,8 @@ def build_parser() -> Parser:
     attach.add_argument("--view-only", action="store_true", help="watch without acquiring input control")
     attach.add_argument("--fps", type=float, default=15.0, help="remote capture refresh target (default: 15)")
     attach.add_argument("--max-width", type=int, default=1600, help="cap each remote frame width (default: 1600)")
+    attach.add_argument("--stream-quality", choices=("lossless", "high", "medium", "low"), default="lossless",
+                        help="Kitty color precision; lower quality can reduce bandwidth (default: lossless)")
     return parser
 
 
@@ -335,7 +339,7 @@ def _attach(client: Any, args: argparse.Namespace) -> int:
     import tty
     from PIL import Image
     from . import cli as interactive
-    from .terminal import KittyRenderer, Terminal, begin_terminal, render_blocks, terminal_size
+    from .terminal import KittyRenderer, Terminal, begin_terminal, render_blocks, terminal_size, write_all
 
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise ValueError("attach needs an interactive terminal")
@@ -343,7 +347,7 @@ def _attach(client: Any, args: argparse.Namespace) -> int:
     mon = status.get("monitor") or {"left": 0, "top": 0, "width": status.get("width", 1920), "height": status.get("height", 1080)}
     screen = type("RemoteScreen", (), {"monitor": mon})()
     graphics = interactive.detect_graphics() if args.graphics == "auto" else args.graphics
-    renderer = KittyRenderer()
+    renderer = KittyRenderer(stream_quality=args.stream_quality)
     controller = _AttachController(client, args.session, readonly=args.view_only)
     controller.owner = args.owner or f"tisplay-attach-{os.getpid()}-{secrets.token_hex(4)}"
     old_winch = signal.getsignal(signal.SIGWINCH)
@@ -386,7 +390,7 @@ def _attach(client: Any, args: argparse.Namespace) -> int:
                         else:
                             rendered, content_box = interactive.fit_ansi(frame, cols, rows)
                             output = render_blocks(rendered)
-                        if output: os.write(sys.stdout.fileno(), output)
+                        if output: write_all(sys.stdout.fileno(), output)
                         frame_digest = current_digest
                     next_frame = now + interval
                 timeout = max(0, min(0.025, next_frame - time.monotonic()))
@@ -414,7 +418,7 @@ def _attach(client: Any, args: argparse.Namespace) -> int:
                 try: client.control(args.session, action="release", owner=controller.owner)
                 except Exception: pass
             cleanup = renderer.close()
-            if cleanup: os.write(sys.stdout.fileno(), cleanup)
+            if cleanup: write_all(sys.stdout.fileno(), cleanup)
             signal.signal(signal.SIGWINCH, old_winch)
     return 0
 
@@ -449,7 +453,11 @@ class _AttachController:
         else:
             held = self._held
             self._held = None
-            if held and held[1:] != (x, y):
+            if held is None:
+                # A mouse-up outside the streamed image can arrive without a
+                # forwarded down event; never turn that orphan release into a click.
+                return
+            if held[1:] != (x, y):
                 _, from_x, from_y = held
                 action = self._frame_action({"type": "drag", "from_x": from_x, "from_y": from_y, "to_x": x, "to_y": y, "button": button})
             else:

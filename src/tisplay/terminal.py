@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import errno
 import os
 import secrets
 import sys
@@ -11,7 +12,22 @@ import tty
 import zlib
 from dataclasses import dataclass
 
-from PIL import Image
+from PIL import Image, ImageOps
+
+STREAM_QUALITY_BITS = {"lossless": 8, "high": 7, "medium": 6, "low": 5}
+
+
+def write_all(fd: int, data: bytes) -> None:
+    """Write a complete terminal frame even when the fd accepts partial data."""
+    view = memoryview(data)
+    while view:
+        try:
+            written = os.write(fd, view)
+        except InterruptedError:
+            continue
+        if written <= 0:
+            raise OSError(errno.EIO, "terminal write made no progress")
+        view = view[written:]
 
 
 @dataclass
@@ -72,21 +88,32 @@ def _encode_kitty(image: Image.Image, cols: int, rows: int, image_id: int,
 class KittyRenderer:
     """Keep Kitty frames visible while replacing them over an in-band stream."""
 
-    def __init__(self, first_image_id: int | None = None, compression_level: int = 1):
+    def __init__(self, first_image_id: int | None = None, compression_level: int = 1,
+                 stream_quality: str = "lossless"):
         # IDs are terminal-session global, so avoid a fixed ID that could
         # collide with another application sharing the terminal.
         self._next_id = first_image_id or (secrets.randbelow(0xFFFFFFFF) + 1)
         self._current_id: int | None = None
         self._compression_level = compression_level
+        if stream_quality not in STREAM_QUALITY_BITS:
+            raise ValueError(f"unknown stream quality: {stream_quality}")
+        self._stream_quality = stream_quality
         self._last_frame: tuple[tuple[int, int], int, int, bytes] | None = None
 
     def render(self, image: Image.Image, cols: int, rows: int) -> bytes:
         """Display the new frame, then delete the previous frame's image."""
-        image = image.convert("RGB")
-        raw_rgb = image.tobytes()
-        signature = (image.size, cols, rows, raw_rgb)
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        source_rgb = image.tobytes()
+        signature = (image.size, cols, rows, source_rgb)
         if signature == self._last_frame:
             return b""
+        bits = STREAM_QUALITY_BITS[self._stream_quality]
+        if bits < 8:
+            image = ImageOps.posterize(image, bits)
+            raw_rgb = image.tobytes()
+        else:
+            raw_rgb = source_rgb
         image_id = self._next_id
         self._next_id = 1 if image_id == 0xFFFFFFFF else image_id + 1
         output = bytearray(_encode_kitty(image, cols, rows, image_id, raw_rgb, self._compression_level))
