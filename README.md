@@ -1,14 +1,14 @@
 <div align="center">
 
-# tisplay
+<h1><img src="site/assets/tisplay-favicon.png" width="40" height="40" alt=""> tisplay</h1>
 
 **See and control a computer's desktop from your terminal—even over SSH.**
 
 [Project site](https://pkyanam.github.io/tisplay/) · [Agent quickstart](https://pkyanam.github.io/tisplay/agents/) · [Source and issues](https://github.com/pkyanam/tisplay) · [Releases](https://github.com/pkyanam/tisplay/releases)
 
-[![Linux desktop integration](https://github.com/pkyanam/tisplay/actions/workflows/linux-desktop.yml/badge.svg)](https://github.com/pkyanam/tisplay/actions/workflows/linux-desktop.yml)
-[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Linux desktop integration](https://github.com/pkyanam/tisplay/actions/workflows/linux-desktop.yml/badge.svg?style=flat&labelColor=171715&color=62625d)](https://github.com/pkyanam/tisplay/actions/workflows/linux-desktop.yml)
+[![MIT License](https://img.shields.io/badge/license-MIT-62625d.svg?style=flat&labelColor=171715)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-62625d.svg?style=flat&labelColor=171715)](https://www.python.org/)
 
 [Install](#install) · [Usage](#usage) · [Presets](#presets) · [Options](#options) · [Development](#development)
 

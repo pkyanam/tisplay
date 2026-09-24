@@ -44,4 +44,6 @@ Key `name` can be one key or a chord joined by `+`, such as `ctrl+c`. `text` acc
 
 `capabilities [--session ID] --json` reports support for capture, pointer, keyboard, Unicode text, virtual resize, remote transport, and control leases for the selected backend. Native support depends on the compositor, active output, and installed tools. Text support can depend on installed backend tools. The current engine reports `resize: false`.
 
+Capabilities include `engine_version` and `engine_generation`. After an upgrade, existing viewers keep running, but their session IDs belong to the prior generation; start a fresh session for new commands.
+
 A failed request is reported as `tisplay: CODE: message` on stderr and exits nonzero. Errors such as unsupported operations, stale geometry, invalid input, and a busy control lease should be surfaced to the caller. Do not automatically repeat a potentially state-changing input request after an ambiguous failure.

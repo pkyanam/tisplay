@@ -6,6 +6,8 @@ Start a session and keep its returned ID for every command:
 tisplay session start --json
 ```
 
+After an upgrade, start a fresh session with the new CLI. Existing attached viewers and their older sessions keep running.
+
 Take a screenshot, choose an action from what it shows, then inspect the result:
 
 ```sh
