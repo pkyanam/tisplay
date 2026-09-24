@@ -26,6 +26,9 @@ def test_bundled_skill_is_printed_offline():
     from pathlib import Path
 
     expected = Path(__file__).parents[1].joinpath("src", "tisplay", "SKILL.md").read_text()
+    skill_discovery_copy = Path(__file__).parents[1].joinpath("skills", "tisplay", "SKILL.md")
+    assert not skill_discovery_copy.is_symlink()
+    assert skill_discovery_copy.read_text() == expected
     script = r"""
 import importlib.abc, sys
 class BlockDesktopImports(importlib.abc.MetaPathFinder):
