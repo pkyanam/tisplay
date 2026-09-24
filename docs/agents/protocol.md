@@ -6,6 +6,7 @@ The supported machine interface is the CLI. Run `tisplay --help` and command-spe
 
 - `--host DESTINATION` selects SSH transport; omit it to use the local per-user daemon. It can appear before a command or on a command that accepts common options.
 - `session start [--mode auto|native-existing|native-headless|virtual] [--name LABEL] [--width PX --height PX] [--preset quality|balanced|fast]` creates a session and returns its ID. `--virtual`, `--native`, and `--native-headless` are mode aliases. Explicit native headless mode may start an isolated labwc/D-Bus session; it does not replace or reconfigure the system desktop.
+- The plain interactive `tisplay` viewer creates a temporary managed session that is removed after 15 minutes without a viewer or active control. Reattaching before expiry cancels cleanup. Explicit `session start` sessions are persistent by default; callers using the private JSONL protocol may opt into cleanup with `start.args.idle_ttl` (1–86400 seconds).
 - `session list`, `session status --session ID`, and `session stop --session ID` enumerate, inspect, and stop sessions.
 - `session resize --session ID WIDTH HEIGHT` is currently unsupported by the backend. Stop and restart with the desired dimensions.
 - `screenshot --session ID [--out PATH] [--scale 0.1–1] [--max-width PX] [--region X Y WIDTH HEIGHT]` writes a PNG to a local path. JSON output reports the path and frame metadata, not base64 image bytes.
@@ -51,6 +52,8 @@ A failed request is reported as `tisplay: CODE: message` on stderr and exits non
 ## Internal capture grounding and CUA service
 
 The private JSONL protocol also supports `environment` and `cua-service` requests for session-aware adapters. `environment` requires a session and returns an allowlist of display variables, backend/mode metadata, and the expected private CUA socket path. `cua-service` requires `args.action` (`start`, `status`, or `stop`) and manages one Cua Driver process and private Unix socket for that Tisplay session; its response includes `cua_socket` and the selected `cua_binary` path. The service is stopped when the session stops. These commands are internal protocol operations, not additional CLI commands.
+
+The internal `viewer` request requires a session and `args.action` (`connect`, `heartbeat`, or `disconnect`) plus a stable `viewer_id`. A connected viewer suppresses idle cleanup; disconnecting the last viewer starts the configured TTL. Heartbeats renew a short viewer lease and can reconnect the same viewer ID after a delayed render. When no viewers are attached, accepted capture/input/control work refreshes the idle deadline; passive status checks do not.
 
 A normal `capture` registers an opaque `frame.capture_id` observation token. It is distinct from the geometry-only `frame_id`. Supply the capture token at the input request level, on an individual input action, or at the batch level to ground coordinates in that screenshot. The daemon maps screenshot pixels through the captured image scale and crop into monitor coordinates; legacy full-display coordinates remain available when no capture token is supplied. A token is valid for 60 seconds, at most 16 observations are retained per session, and the token is consumed by one input call. Unknown, expired, reused, or layout-stale tokens fail with `stale_capture`.
 

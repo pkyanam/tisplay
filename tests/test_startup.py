@@ -1,4 +1,5 @@
 from argparse import Namespace
+import time
 from pathlib import Path
 import subprocess
 import sys
@@ -25,7 +26,7 @@ def test_main_turns_keyboard_interrupt_into_clean_exit(monkeypatch, capsys):
     def interrupt(_args):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(cli, "run", interrupt)
+    monkeypatch.setattr(cli, "run_managed_default", interrupt)
     monkeypatch.setattr(cli.sys, "argv", ["tisplay"])
     try:
         cli.main()
@@ -36,6 +37,47 @@ def test_main_turns_keyboard_interrupt_into_clean_exit(monkeypatch, capsys):
     stderr = capsys.readouterr().err
     assert "interrupted; cleanup completed" in stderr
     assert "Traceback" not in stderr
+
+
+def test_plain_viewer_reuses_idle_ttl_session_and_prints_usable_reconnect(monkeypatch):
+    from tisplay import client as client_module
+
+    existing = {"session_id": "session-123", "name": "interactive", "idle_ttl": 900,
+                "idle_expires_at": time.time() + 600, "viewer_count": 0,
+                "width": 1600, "height": 900, "mode": "auto"}
+
+    class FakeClient:
+        closed = False
+        def capabilities(self): return {"session_idle_ttl": True, "viewer_leases": True}
+        def list(self): return {"sessions": [existing]}
+        def start(self, **kwargs): raise AssertionError("reusable session should be selected")
+        def close(self): self.closed = True
+
+    fake = FakeClient()
+    monkeypatch.setattr(client_module, "SessionClient", lambda: fake)
+    monkeypatch.setattr(cli.sys, "argv", ["/opt/tisplay"])
+    monkeypatch.setattr(cli, "run_session_viewer", lambda args, client, sid, reconnect:
+                        (sid, reconnect))
+    args = Namespace(mode="auto", command=[], width=1600, height=900, graphics="kitty",
+                     fps=60, max_width=1600, stream_quality="low")
+
+    sid, reconnect = cli.run_managed_default(args)
+    assert sid == "session-123"
+    assert reconnect == "/opt/tisplay attach --session session-123 --graphics kitty --fps 60 --max-width 1600 --stream-quality low"
+    assert "None" not in reconnect
+    assert fake.closed
+
+
+def test_engine_stdio_accepts_legacy_generation_argument(monkeypatch):
+    from tisplay import daemon
+
+    called = []
+    monkeypatch.setattr(cli.sys, "argv", ["tisplay", "--engine-stdio", "--generation", "3"])
+    monkeypatch.setattr(daemon, "run_stdio", lambda generation=None: called.append(generation) or 0)
+    with pytest.raises(SystemExit) as result:
+        cli.main()
+    assert result.value.code == 0
+    assert called == [3]
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux process-group cleanup")

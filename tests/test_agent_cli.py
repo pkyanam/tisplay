@@ -78,6 +78,23 @@ def test_attach_accepts_explicit_lossy_stream_quality():
     assert args.stream_quality == "low"
 
 
+def test_same_host_v4_attach_uses_local_fast_viewer(monkeypatch):
+    args = agent_cli.build_parser().parse_args(["attach", "--session", "s1"])
+
+    class FakeClient:
+        closed = False
+        def capabilities(self, session):
+            assert session == "s1"
+            return {"viewer_leases": True}
+        def close(self): self.closed = True
+
+    client = FakeClient()
+    monkeypatch.setattr(agent_cli, "_client", lambda host: client)
+    monkeypatch.setattr(cli, "run_session_viewer", lambda args, client, sid: 17)
+    assert agent_cli.dispatch(args) == 17
+    assert client.closed
+
+
 def test_drag_cli_action_uses_engine_coordinate_contract():
     args = agent_cli.build_parser().parse_args(
         ["drag", "--session", "s1", "12", "34", "56", "78"]

@@ -33,6 +33,7 @@ class Parser(argparse.ArgumentParser):
 EPILOG = """\
 EXAMPLES
   Human terminal             tisplay --native --preset balanced
+  Reconnect after disconnect tisplay attach --session SESSION --graphics kitty --fps 60
   Start a named desktop      tisplay session start --mode virtual --name work --json
   Start one on a Pi          tisplay --host pi session start --mode native-headless --name work --json
   Inspect / save a frame     tisplay screenshot --session SESSION --out frame.png
@@ -626,7 +627,15 @@ def dispatch(args: argparse.Namespace) -> int:
             if action == "acquire": options["lease_seconds"] = args.lease_seconds
             result = client.control(args.session, action=action, **options)
         elif root == "capabilities": result = client.capabilities(session=getattr(args, "session", None))
-        elif root == "attach": return _attach(client, args)
+        elif root == "attach":
+            # Same-host generation-4 sessions can use the original fast local
+            # capture path. Remote hosts and older daemons retain PNG polling.
+            if not args.host:
+                capabilities = client.capabilities(args.session)
+                if capabilities.get("viewer_leases"):
+                    from .cli import run_session_viewer
+                    return run_session_viewer(args, client, args.session)
+            return _attach(client, args)
         else: raise ValueError(f"unknown command {root}")
         _emit(result, args.json)
         return 0

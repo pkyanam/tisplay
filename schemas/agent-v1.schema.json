@@ -308,6 +308,11 @@
           "minimum": 240,
           "maximum": 4320
         },
+        "idle_ttl": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 86400
+        },
         "command": {
           "type": "array",
           "items": {
@@ -485,6 +490,20 @@
       },
       "additionalProperties": false
     },
+    "viewerArgs": {
+      "type": "object",
+      "required": ["action", "viewer_id"],
+      "properties": {
+        "action": {"enum": ["connect", "heartbeat", "disconnect"]},
+        "viewer_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_.:-]+$"
+        }
+      },
+      "additionalProperties": false
+    },
     "request": {
       "type": "object",
       "required": [
@@ -514,7 +533,8 @@
             "control",
             "capabilities",
             "environment",
-            "cua-service"
+            "cua-service",
+            "viewer"
           ]
         },
         "session": {
@@ -674,6 +694,20 @@
               "args": {
                 "$ref": "#/$defs/cuaServiceArgs"
               }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {"const": "viewer"}
+            },
+            "required": ["command"]
+          },
+          "then": {
+            "required": ["session"],
+            "properties": {
+              "args": {"$ref": "#/$defs/viewerArgs"}
             }
           }
         }

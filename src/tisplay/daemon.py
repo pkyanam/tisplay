@@ -60,6 +60,9 @@ class Session:
     cua_log: Any = None
     cua_log_path: str | None = None
     cua_binary_path: str | None = None
+    idle_ttl: float | None = None
+    idle_deadline: float | None = None
+    viewers: dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.mode is None:
@@ -72,6 +75,7 @@ class Engine:
     def __init__(self) -> None:
         self.sessions: dict[str, Session] = {}
         self.lock = threading.RLock()
+        self.viewer_lease_seconds = 60.0
         self.base_env = {k: os.environ.get(k) for k in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "TISPLAY_WAYLAND_OUTPUT", "LABWC_FALLBACK_OUTPUT", "DBUS_SESSION_BUS_ADDRESS", "DBUS_SESSION_BUS_PID")}
         if sys.platform.startswith("linux") and not self.base_env.get("DISPLAY"):
             found = discover_accessible_x11_display()
@@ -109,8 +113,16 @@ class Engine:
             if command == "status": return self.describe(session)
             if command == "environment": return self.environment(session)
             if command == "cua-service": return self.cua_service(session, args)
+            if command == "viewer": return self.viewer(session, args)
             if command == "stop": return self.stop(session)
             if command == "resize": return self.resize(session, args)
+            active_work = command in ("capture", "open-url", "input", "batch")
+            active_work |= command == "control" and args.get("action") != "status"
+            active_work |= command == "cua-service" and args.get("action") != "status"
+            if active_work:
+                # Meaningful work keeps an idle managed desktop alive. Passive
+                # status/list polling deliberately does not extend its lifetime.
+                self._record_activity(session)
             if command == "capture": return self.capture(session, args)
             if command == "open-url": return self.open_url(session, args)
             if command == "input": return self.input(session, args)
@@ -127,6 +139,11 @@ class Engine:
             mode = "virtual" if args.get("virtual", False) else "auto"
         if mode not in ("auto", "native-existing", "native-headless", "virtual"):
             raise EngineError("mode must be auto, native-existing, native-headless, or virtual", "invalid_request")
+        idle_ttl = args.get("idle_ttl")
+        if idle_ttl is not None:
+            if isinstance(idle_ttl, bool) or not isinstance(idle_ttl, (int, float)) or not 1 <= idle_ttl <= 86400:
+                raise EngineError("idle_ttl must be between 1 and 86400 seconds", "invalid_request")
+            idle_ttl = float(idle_ttl)
         virtual = mode == "virtual"
         sid = str(args.get("session_id") or uuid.uuid4().hex[:12])
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", sid):
@@ -218,7 +235,8 @@ class Engine:
         session = Session(sid, width, height, virtual, display, desktop, command, env=selected_env, name=args.get("name"), mode=mode,
                           backend="virtual-x11" if virtual else ("wayland-native" if mode.startswith("native") and selected_env.get("WAYLAND_DISPLAY") else "x11"),
                           readiness_reason="ready" if virtual or display else "native desktop connected",
-                          provider_owned=bool(virtual or getattr(desktop, "owned", False)))
+                          provider_owned=bool(virtual or getattr(desktop, "owned", False)), idle_ttl=idle_ttl,
+                          idle_deadline=(time.time() + idle_ttl) if idle_ttl is not None else None)
         self.sessions[sid] = session
         return self.describe(session)
 
@@ -227,8 +245,38 @@ class Engine:
                 "virtual": s.virtual, "mode": s.mode, "backend": s.backend,
                 "provider_ownership": "session" if s.provider_owned else "shared",
                 "readiness": {"ready": True, "reason": s.readiness_reason}, "created": s.created, "running": True,
+                "idle_ttl": s.idle_ttl, "idle_expires_at": s.idle_deadline, "viewer_count": len(s.viewers),
                 "control": {"owner": s.control_owner if s.control_until > time.time() else None,
                             "expires_at": s.control_until if s.control_until > time.time() else None}}
+
+    def viewer(self, s: Session, args: dict[str, Any]) -> dict[str, Any]:
+        action = args.get("action")
+        viewer_id = args.get("viewer_id")
+        if action not in ("connect", "heartbeat", "disconnect"):
+            raise EngineError("viewer action must be connect, heartbeat, or disconnect", "invalid_request")
+        if not isinstance(viewer_id, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", viewer_id):
+            raise EngineError("viewer_id must be a non-empty identifier of at most 128 safe characters", "invalid_request")
+        now = time.time()
+        if action == "connect":
+            s.viewers[viewer_id] = now
+            s.idle_deadline = None
+        elif action == "heartbeat":
+            # A delayed capture or a paused terminal can outlast the lease.
+            # Treat heartbeat as an idempotent reconnect while the session is
+            # still in its grace period; the viewer ID is unguessable client
+            # state and requests are already scoped to the user's socket.
+            s.viewers[viewer_id] = now
+            s.idle_deadline = None
+        else:
+            removed = s.viewers.pop(viewer_id, None) is not None
+            if removed and not s.viewers and s.idle_ttl is not None:
+                s.idle_deadline = now + s.idle_ttl
+        return {"viewer_id": viewer_id, "connected": viewer_id in s.viewers,
+                "viewer_count": len(s.viewers), "idle_expires_at": s.idle_deadline}
+
+    def _record_activity(self, s: Session, now: float | None = None) -> None:
+        if s.idle_ttl is not None and not s.viewers:
+            s.idle_deadline = (time.time() if now is None else now) + s.idle_ttl
 
     def environment(self, s: Session) -> dict[str, Any]:
         """Return only the display/session variables needed by native adapters."""
@@ -450,10 +498,20 @@ class Engine:
     def expire_leases(self) -> None:
         with self.lock:
             now = time.time()
-            for s in self.sessions.values():
+            for s in list(self.sessions.values()):
+                expired_viewers = [viewer_id for viewer_id, seen in s.viewers.items()
+                                   if seen + self.viewer_lease_seconds <= now]
+                for viewer_id in expired_viewers:
+                    s.viewers.pop(viewer_id, None)
+                if expired_viewers and not s.viewers and s.idle_ttl is not None:
+                    s.idle_deadline = now + s.idle_ttl
                 if s.control_owner and s.control_until <= now:
                     self._release_all(s)
                     s.control_owner, s.control_until, s.held_owner = None, 0, None
+                if (s.idle_ttl is not None and not s.viewers and s.idle_deadline is not None
+                        and s.idle_deadline <= now
+                        and not (s.control_owner and s.control_until > now)):
+                    self.stop(s)
 
     def resize(self, s: Session, args: dict[str, Any]) -> dict[str, Any]:
         if not s.virtual: raise EngineError("resize is supported only for tisplay virtual desktops", "unsupported")
@@ -488,6 +546,7 @@ class Engine:
         provider = selected.backend if selected else ("wayland-native" if native else ("x11" if linux_x11 else "platform"))
         can_manage_headless = sys.platform.startswith("linux") and bool(shutil_which("labwc") and shutil_which("dbus-run-session"))
         return {"engine_version": __version__, "engine_generation": ENGINE_GENERATION,
+                "session_idle_ttl": True, "viewer_leases": True,
                 "capture": bool(native or linux_x11 or not sys.platform.startswith("linux")), "pointer": backend is not None or native,
                 "keyboard": backend is not None or native,
                 "input_backend": "wayvnc-unix" if native else backend, "unicode_text": bool(text or native),
@@ -960,18 +1019,25 @@ def _serve_client(conn: socket.socket, engine: Engine) -> None:
             stream.write(_response(engine, line)); stream.flush()
 
 
-def run_stdio() -> int:
+def run_stdio(generation: int | None = None) -> int:
     """SSH bridge: forward JSONL to the remote user's daemon socket."""
-    path = socket_path()
+    generation = ENGINE_GENERATION if generation is None else generation
+    if generation not in (3, ENGINE_GENERATION):
+        print(f"unsupported tisplay engine generation: {generation}", file=sys.stderr)
+        return 2
+    path = socket_path(generation)
     end = time.monotonic() + 5
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     while True:
         try: client.connect(str(path)); break
         except OSError:
-            if time.monotonic() >= end:
+            if time.monotonic() >= end and generation == ENGINE_GENERATION:
                 subprocess.Popen([sys.executable, "-m", "tisplay.daemon"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
                 end = time.monotonic() + 5
                 time.sleep(.1)
+            elif time.monotonic() >= end:
+                print(f"legacy tisplay engine generation {generation} is not running", file=sys.stderr)
+                return 1
             else: time.sleep(.05)
     remote = client.makefile("rwb")
     try:

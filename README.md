@@ -62,6 +62,8 @@ If `~/.local/bin` is on the remote account's `PATH`, you can use `ssh -t user@co
 
 `Ctrl-]` exits `tisplay`. Keyboard input, clicks, pointer movement, and scrolling are forwarded to the desktop. `Ctrl-C` is sent to the desktop as a key chord.
 
+The one-command viewer uses a managed desktop session. Before switching to the live screen, it prints a reconnect command such as `~/.local/bin/tisplay attach --session 123abc --graphics kitty --fps 60 --max-width 1600 --stream-quality low`. If the terminal disconnects, that same desktop stays available for 15 minutes; run the printed command to reconnect and cancel cleanup. A clean disconnect starts the timer, and a lost SSH connection is detected by the viewer lease. Reconnecting uses local capture for same-host sessions, preserving the responsive stream path. `tisplay session start` remains persistent until explicitly stopped, and older engine sessions retain their existing lifetime behavior.
+
 ### Displays and terminals
 
 On Linux, `tisplay` automatically selects an available supported desktop, then uses the installed virtual fallback when no native display is available. Use `--native` to require a supported existing native desktop, `--native-headless` to create or use an isolated headless Wayland compositor, or `--virtual` to force a private Xvfb/XFCE desktop. Existing native sessions are reused without changing the system compositor. Append `--` and a command to launch an application in a virtual desktop:

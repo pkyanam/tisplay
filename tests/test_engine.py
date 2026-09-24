@@ -40,6 +40,106 @@ def test_new_engine_uses_generation_scoped_socket(monkeypatch, tmp_path):
     assert socket_path() == tmp_path / "tisplay" / f"engine-v{ENGINE_GENERATION}.sock"
 
 
+def test_viewer_leases_cancel_and_restart_idle_cleanup(monkeypatch):
+    import tisplay.daemon as daemon
+
+    now = [100.0]
+    monkeypatch.setattr(daemon.time, "time", lambda: now[0])
+    engine = Engine()
+    session = Session("managed", 800, 600, idle_ttl=900, idle_deadline=1000.0)
+    engine.sessions[session.id] = session
+
+    engine.viewer(session, {"action": "connect", "viewer_id": "viewer-a"})
+    assert session.idle_deadline is None
+    engine.viewer(session, {"action": "connect", "viewer_id": "viewer-b"})
+    engine.viewer(session, {"action": "disconnect", "viewer_id": "viewer-a"})
+    assert session.idle_deadline is None
+    engine.viewer(session, {"action": "disconnect", "viewer_id": "viewer-b"})
+    assert session.idle_deadline == 1000.0
+
+    # A delayed viewer heartbeat is an idempotent reconnect within the grace.
+    engine.viewer(session, {"action": "heartbeat", "viewer_id": "viewer-b"})
+    assert session.idle_deadline is None
+    assert session.viewers == {"viewer-b": now[0]}
+    engine.viewer(session, {"action": "disconnect", "viewer_id": "viewer-b"})
+    assert session.idle_deadline == 1000.0
+
+    now[0] = 999.0
+    engine._record_activity(session)
+    assert session.idle_deadline == 1899.0
+    now[0] = 1898.0
+    engine.expire_leases()
+    assert session.id in engine.sessions
+    session.idle_deadline = now[0]
+    session.control_owner, session.control_until = "agent", now[0] + 10
+    engine.expire_leases()
+    assert session.id in engine.sessions
+    now[0] += 11
+    engine.expire_leases()
+    assert session.id not in engine.sessions
+
+
+def test_viewer_lease_expiry_starts_grace_and_duplicate_disconnect_does_not_extend(monkeypatch):
+    import tisplay.daemon as daemon
+
+    now = [100.0]
+    monkeypatch.setattr(daemon.time, "time", lambda: now[0])
+    engine = Engine()
+    engine.viewer_lease_seconds = 60
+    session = Session("managed", 800, 600, idle_ttl=900)
+    engine.sessions[session.id] = session
+    engine.viewer(session, {"action": "connect", "viewer_id": "viewer-a"})
+    now[0] = 161.0
+    engine.expire_leases()
+    assert session.viewers == {}
+    assert session.idle_deadline == 1061.0
+    engine.viewer(session, {"action": "disconnect", "viewer_id": "viewer-a"})
+    assert session.idle_deadline == 1061.0
+
+
+def test_persistent_sessions_ignore_idle_expiration():
+    engine = Engine()
+    session = Session("persistent", 800, 600)
+    engine.sessions[session.id] = session
+    engine.expire_leases()
+    assert engine.sessions[session.id] is session
+
+
+def test_passive_status_does_not_extend_managed_idle_deadline(monkeypatch):
+    import tisplay.daemon as daemon
+
+    now = [100.0]
+    monkeypatch.setattr(daemon.time, "time", lambda: now[0])
+    engine = Engine()
+    session = Session("managed", 800, 600, idle_ttl=900, idle_deadline=500.0)
+    engine.sessions[session.id] = session
+    engine.dispatch({"command": "control", "session": session.id, "args": {"action": "status"}})
+    engine.dispatch({"command": "status", "session": session.id, "args": {}})
+    assert session.idle_deadline == 500.0
+
+
+def test_legacy_stdio_bridge_does_not_start_second_daemon(monkeypatch):
+    import io
+    import tisplay.daemon as daemon
+
+    attempts = []
+    class MissingSocket:
+        def connect(self, path):
+            attempts.append(path)
+            raise FileNotFoundError(path)
+        def close(self):
+            pass
+    monkeypatch.setattr(daemon.socket, "socket", lambda *_args: MissingSocket())
+    monkeypatch.setattr(daemon, "socket_path", lambda generation=None: Path(f"/tmp/engine-v{generation}.sock"))
+    monotonic = iter((0.0, 6.0, 6.0))
+    monkeypatch.setattr(daemon.time, "monotonic", lambda: next(monotonic))
+    monkeypatch.setattr(daemon.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(daemon.subprocess, "Popen", lambda *_a, **_kw: pytest.fail("legacy bridge must not start a daemon"))
+    monkeypatch.setattr(daemon.sys, "stderr", io.StringIO())
+    assert daemon.run_stdio(generation=3) == 1
+    assert attempts == ["/tmp/engine-v3.sock"]
+
+
 def test_input_uses_source_pixels_and_requires_lease_for_held_keys(monkeypatch):
     engine = Engine()
     class FakeScreen:

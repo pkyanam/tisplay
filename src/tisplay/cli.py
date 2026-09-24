@@ -6,6 +6,7 @@ import argparse
 import array
 import fcntl
 import os
+import shlex
 import select
 import shutil
 import signal
@@ -368,7 +369,156 @@ def startup_display(args: argparse.Namespace):
                 os.environ["DISPLAY"] = original_display
 
 
-def run(args: argparse.Namespace) -> int:
+@contextmanager
+def _session_environment(values: dict[str, str]):
+    keys = ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME",
+            "DBUS_SESSION_BUS_ADDRESS", "TISPLAY_WAYLAND_OUTPUT")
+    old = {key: os.environ.get(key) for key in keys}
+    try:
+        for key in keys:
+            value = values.get(key)
+            if value:
+                os.environ[key] = value
+            else:
+                os.environ.pop(key, None)
+        yield
+    finally:
+        for key, value in old.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _local_session_adapters(info: dict[str, object], environment: dict[str, str], view_only: bool = False):
+    """Open process-local capture and input adapters for a daemon session."""
+    from .capture import Screen, make_controller
+    if info.get("backend") == "wayland-native":
+        from .native import NativeDisplay, NativeWaylandController
+        screen = NativeDisplay()
+        return screen, NoopController() if view_only else NativeWaylandController(environment=environment)
+    screen = Screen(allow_wayland=info.get("mode") == "virtual")
+    return screen, NoopController() if view_only else make_controller()
+
+
+def run_session_viewer(args: argparse.Namespace, client, session_id: str,
+                       reconnect_command: str | None = None) -> int:
+    """Run the original local fast capture loop against a daemon session."""
+    status = client.status(session_id)
+    environment = client.environment(session_id).get("environment", {})
+    capabilities = client.capabilities(session_id)
+    viewer_id = f"view-{os.getpid()}-{os.urandom(8).hex()}"
+    owner = f"tisplay-{viewer_id}"
+    viewer_connected = False
+    control_owned = False
+    screen = controller = None
+    stream_entered = False
+    if capabilities.get("viewer_leases"):
+        client.request("viewer", session_id, action="connect", viewer_id=viewer_id)
+        viewer_connected = True
+    try:
+        with _session_environment(environment):
+            view_only = bool(getattr(args, "view_only", False))
+            screen, controller = _local_session_adapters(status, environment, view_only)
+            if not view_only:
+                client.control(session_id, action="acquire", owner=owner, lease_seconds=60)
+                control_owned = True
+            renew_at = time.monotonic() + 20
+
+            def heartbeat() -> None:
+                nonlocal renew_at
+                if time.monotonic() < renew_at:
+                    return
+                if not view_only:
+                    client.control(session_id, action="acquire", owner=owner, lease_seconds=60)
+                if viewer_connected:
+                    client.request("viewer", session_id, action="heartbeat", viewer_id=viewer_id)
+                renew_at = time.monotonic() + 20
+
+            stream_args = argparse.Namespace(**vars(args))
+            stream_args.preset = getattr(stream_args, "preset", "balanced")
+            stream_args.fps = getattr(stream_args, "fps", None)
+            stream_args.max_width = getattr(stream_args, "max_width", None)
+            stream_args.width = getattr(stream_args, "width", status.get("width", 1280))
+            stream_args.height = getattr(stream_args, "height", status.get("height", 800))
+            stream_args.command = []
+            stream_args.mode = status.get("mode", "auto")
+            stream_args.test_pattern = False
+            stream_args._resolved_mode = stream_args.mode
+            managed = {"mode": status.get("mode"), "screen": screen, "controller": controller,
+                       "heartbeat": heartbeat, "reconnect_command": reconnect_command}
+            stream_entered = True
+            return run(stream_args, managed=managed)
+    finally:
+        if not stream_entered:
+            if controller is not None:
+                try: controller.close()
+                except Exception: pass
+            if screen is not None:
+                if hasattr(screen, "grabber"):
+                    screen.grabber.close()
+                elif hasattr(screen, "close"):
+                    screen.close()
+        if control_owned:
+            try:
+                client.control(session_id, action="release", owner=owner)
+            except Exception:
+                pass
+        if viewer_connected:
+            try:
+                client.request("viewer", session_id, action="disconnect", viewer_id=viewer_id)
+            except Exception:
+                pass
+
+
+def run_managed_default(args: argparse.Namespace) -> int:
+    """Create a temporary, reconnectable session for plain `tisplay`."""
+    from .client import SessionClient
+
+    client = SessionClient()
+    session = None
+    try:
+        caps = client.capabilities()
+        if not (caps.get("session_idle_ttl") and caps.get("viewer_leases")):
+            raise RuntimeError("the running tisplay daemon is too old for reconnectable sessions; use `tisplay --update` first")
+        mode = "virtual" if args.command else args.mode
+        session = None
+        if not args.command:
+            try:
+                for candidate in client.list().get("sessions", []):
+                    if candidate.get("name") != "interactive" or candidate.get("idle_ttl") != 900:
+                        continue
+                    if candidate.get("viewer_count", 0) != 0:
+                        continue
+                    if candidate.get("width") != args.width or candidate.get("height") != args.height:
+                        continue
+                    candidate_mode = candidate.get("mode", "auto")
+                    if args.mode != "auto" and candidate_mode != args.mode:
+                        continue
+                    if (candidate.get("idle_expires_at") or 0) <= time.time():
+                        continue
+                    session = candidate
+                    break
+            except Exception:
+                # Listing is only an optimization; start below reports the
+                # actionable failure if the daemon is unavailable.
+                pass
+        if session is None:
+            session = client.start(mode=mode, width=args.width, height=args.height,
+                                   name="interactive", idle_ttl=900,
+                                   **({"command": args.command} if args.command else {}))
+        session_id = session["session_id"]
+        command_parts = [sys.argv[0], "attach", "--session", session_id,
+                         "--graphics", args.graphics, "--fps", f"{args.fps:g}",
+                         "--max-width", str(args.max_width or args.width),
+                         "--stream-quality", args.stream_quality]
+        reconnect_command = shlex.join(command_parts)
+        return run_session_viewer(args, client, session_id, reconnect_command)
+    finally:
+        client.close()
+
+
+def run(args: argparse.Namespace, managed: dict[str, object] | None = None) -> int:
     from .capture import DesktopError, Screen, VirtualDisplay, make_controller
     from .terminal import KittyRenderer, Terminal, begin_terminal, render_blocks, terminal_size, write_all
 
@@ -381,15 +531,19 @@ def run(args: argparse.Namespace) -> int:
     else:
         graphics = detect_graphics()
 
-    if getattr(args, "test_pattern", False):
+    if managed is not None:
+        display_context = nullcontext((None, managed.get("mode") == "virtual"))
+    elif getattr(args, "test_pattern", False):
         display_context = nullcontext((None, False))
     else:
         display_context = startup_display(args)
     with display_context as (display, use_virtual):
-        if use_virtual and args.command:
+        if managed is None and use_virtual and args.command:
             display.launch(args.command)
         test_pattern = getattr(args, "test_pattern", False)
-        if test_pattern:
+        if managed is not None:
+            screen, controller = managed["screen"], managed["controller"]
+        elif test_pattern:
             screen, controller = TestPatternScreen(args.width, args.height), NoopController()
         elif args._resolved_mode.startswith("native") and display is not None:
             from .native import NativeDisplay, NativeWaylandController
@@ -403,6 +557,12 @@ def run(args: argparse.Namespace) -> int:
         old_winch = signal.getsignal(signal.SIGWINCH)
         signal.signal(signal.SIGWINCH, lambda *_: None)
         try:
+            reconnect_command = managed.get("reconnect_command") if managed else None
+            if reconnect_command:
+                # Keep this one-time hint in the parent screen's scrollback;
+                # only then enter the alternate screen for the live stream.
+                sys.stdout.write(f"Reconnect to this desktop with:\n{reconnect_command}\n")
+                sys.stdout.flush()
             with Terminal(sys.stdin.fileno()):
                 try:
                     begin_terminal()
@@ -413,8 +573,10 @@ def run(args: argparse.Namespace) -> int:
                     sys.stderr.flush()
                     next_frame = 0.0
                     while True:
+                        if managed and managed.get("heartbeat"):
+                            managed["heartbeat"]()
                         now = time.monotonic()
-                        if use_virtual and args.command:
+                        if managed is None and use_virtual and args.command:
                             display.check_command()
                         if now >= next_frame:
                             cols, rows = terminal_size()
@@ -434,6 +596,8 @@ def run(args: argparse.Namespace) -> int:
                             chunk = os.read(sys.stdin.fileno(), 256)
                             if not chunk:
                                 break
+                            if managed and managed.get("heartbeat"):
+                                managed["heartbeat"]()
                             pending.extend(chunk)
                             if pending == b"\x1b":
                                 escape_since = time.monotonic()
@@ -444,6 +608,8 @@ def run(args: argparse.Namespace) -> int:
                             if not process_input(pending, controller, screen, *terminal_size(), graphics, content_box):
                                 break
                         if escape_since is not None and time.monotonic() - escape_since >= 0.15:
+                            if managed and managed.get("heartbeat"):
+                                managed["heartbeat"]()
                             if not process_input(pending, controller, screen, *terminal_size(), graphics, content_box, True):
                                 break
                             escape_since = None
@@ -452,7 +618,14 @@ def run(args: argparse.Namespace) -> int:
                     if cleanup:
                         write_all(sys.stdout.fileno(), cleanup)
         finally:
-            controller.close()
+            try:
+                controller.close()
+            finally:
+                if managed is not None:
+                    if hasattr(screen, "grabber"):
+                        screen.grabber.close()
+                    elif hasattr(screen, "close"):
+                        screen.close()
             signal.signal(signal.SIGWINCH, old_winch)
     return 0
 
@@ -467,9 +640,19 @@ def main() -> None:
         from importlib.resources import files
         print(files("tisplay").joinpath("SKILL.md").read_text(encoding="utf-8"), end="")
         raise SystemExit(0)
-    if argv == ["--engine-stdio"]:
+    if argv and argv[0] == "--engine-stdio":
         from .daemon import run_stdio
-        raise SystemExit(run_stdio())
+        generation = None
+        if len(argv) == 3 and argv[1] == "--generation":
+            try:
+                generation = int(argv[2])
+            except ValueError:
+                print("tisplay: --generation must be an integer", file=sys.stderr)
+                raise SystemExit(2)
+        elif len(argv) != 1:
+            print("tisplay: invalid --engine-stdio arguments", file=sys.stderr)
+            raise SystemExit(2)
+        raise SystemExit(run_stdio(generation=generation))
     agent_commands = {"session", "screenshot", "observe", "state", "click", "double-click", "move", "drag", "scroll",
                       "text", "type-text", "key", "press-key", "open-url", "act", "wait", "control", "capabilities", "attach",
                       "cua", "update"}
@@ -521,11 +704,16 @@ def main() -> None:
     if (args.max_width is not None and args.max_width < 160) or args.width < 320 or args.height < 240:
         parser.error("capture and virtual display dimensions are too small")
     try:
+        if not args.test_pattern:
+            raise SystemExit(run_managed_default(args))
         raise SystemExit(run(args))
     except KeyboardInterrupt:
         print("tisplay: interrupted; cleanup completed.", file=sys.stderr)
         raise SystemExit(130)
     except DesktopError as exc:
+        print(f"tisplay: {exc}", file=sys.stderr)
+        raise SystemExit(2)
+    except RuntimeError as exc:
         print(f"tisplay: {exc}", file=sys.stderr)
         raise SystemExit(2)
 
