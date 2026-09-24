@@ -248,7 +248,7 @@ def startup_display(args: argparse.Namespace):
             auto_virtual = True
     use_virtual = args.virtual or auto_virtual
     if use_virtual:
-        missing = [name for name in ("Xvfb", "xauth", "dbus-run-session", "startxfce4", "xfce4-panel", "xprop", "pgrep") if not shutil.which(name)]
+        missing = [name for name in ("Xvfb", "xauth", "dbus-run-session", "startxfce4", "xfce4-panel", "xprop") if not shutil.which(name)]
         if missing:
             raise DesktopError(f"Full virtual desktop dependencies missing ({', '.join(missing)}). Re-run install.sh to install Xfce, D-Bus, Xvfb, and X11 tools.")
     context = VirtualDisplay(args.width, args.height) if use_virtual else nullcontext()
@@ -366,6 +366,9 @@ def main() -> None:
         parser.error("capture and virtual display dimensions are too small")
     try:
         raise SystemExit(run(args))
+    except KeyboardInterrupt:
+        print("tisplay: interrupted; cleanup completed.", file=sys.stderr)
+        raise SystemExit(130)
     except DesktopError as exc:
         print(f"tisplay: {exc}", file=sys.stderr)
         raise SystemExit(2)

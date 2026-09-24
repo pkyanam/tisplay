@@ -20,19 +20,19 @@ OS="$(uname -s)"
 if [ "$OS" = Linux ]; then
   if command -v apt-get >/dev/null 2>&1; then
     PKG=apt-get
-    PACKAGES=(python3 python3-venv python3-pip python3-dev build-essential libx11-dev libxtst-dev libevdev-dev xvfb xauth x11-utils procps dbus-daemon xfce4-session xfce4-panel xfce4-settings xfwm4 xfdesktop4 thunar xfce4-terminal)
+    PACKAGES=(python3 python3-venv python3-pip python3-dev build-essential libx11-dev libxtst-dev libevdev-dev xvfb xauth x11-utils dbus-daemon xfce4-session xfce4-panel xfce4-settings xfwm4 xfdesktop4 thunar xfce4-terminal)
   elif command -v dnf >/dev/null 2>&1; then
     PKG=dnf
-    PACKAGES=(python3 python3-pip python3-devel gcc gcc-c++ make libX11-devel libXtst-devel libevdev-devel xorg-x11-server-Xvfb xorg-x11-xauth xrandr procps-ng dbus-daemon xfce4-session xfce4-panel xfce4-settings xfwm4 xfdesktop thunar xfce4-terminal)
+    PACKAGES=(python3 python3-pip python3-devel gcc gcc-c++ make libX11-devel libXtst-devel libevdev-devel xorg-x11-server-Xvfb xorg-x11-xauth xorg-x11-utils xrandr dbus-daemon xfce4-session xfce4-panel xfce4-settings xfwm4 xfdesktop thunar xfce4-terminal)
   elif command -v yum >/dev/null 2>&1; then
     PKG=yum
-    PACKAGES=(python3 python3-pip python3-devel gcc gcc-c++ make libX11-devel libXtst-devel libevdev-devel xorg-x11-server-Xvfb xorg-x11-xauth xrandr procps-ng dbus-daemon xfce4-session xfce4-panel xfce4-settings xfwm4 xfdesktop thunar xfce4-terminal)
+    PACKAGES=(python3 python3-pip python3-devel gcc gcc-c++ make libX11-devel libXtst-devel libevdev-devel xorg-x11-server-Xvfb xorg-x11-xauth xorg-x11-utils xrandr dbus-daemon xfce4-session xfce4-panel xfce4-settings xfwm4 xfdesktop thunar xfce4-terminal)
   elif command -v pacman >/dev/null 2>&1; then
     PKG=pacman
-    PACKAGES=(python python-pip base-devel libx11 libxtst libevdev xorg-server-xvfb xorg-xauth xorg-xrandr procps-ng dbus xfce4-session xfce4-panel xfce4-settings xfwm4 xfdesktop thunar xfce4-terminal)
+    PACKAGES=(python python-pip base-devel libx11 libxtst libevdev xorg-server-xvfb xorg-xauth xorg-xprop xorg-xrandr dbus xfce4-session xfce4-panel xfce4-settings xfwm4 xfdesktop thunar xfce4-terminal)
   elif command -v zypper >/dev/null 2>&1; then
     PKG=zypper
-    PACKAGES=(python3 python3-pip python3-devel gcc gcc-c++ make libX11-devel libXtst-devel libevdev-devel xorg-x11-server-extra xauth xrandr procps dbus-1 xfce4-session xfce4-panel xfce4-settings xfwm4 xfdesktop thunar xfce4-terminal)
+    PACKAGES=(python3 python3-pip python3-devel gcc gcc-c++ make libX11-devel libXtst-devel libevdev-devel xorg-x11-server-extra xauth x11-tools xrandr dbus-1 xfce4-session xfce4-panel xfce4-settings xfwm4 xfdesktop thunar xfce4-terminal)
   else
     fail "unsupported Linux distribution: install Python 3.10+, pip, X11/XTest support, Xvfb, xauth, D-Bus and the XFCE desktop components manually."
   fi

@@ -10,7 +10,7 @@ import pytest
 from tisplay.capture import DesktopError, Screen, VirtualDisplay, XTestController
 
 
-REQUIRED = ("Xvfb", "xauth", "dbus-run-session", "startxfce4", "xfce4-panel", "xprop", "pgrep", "xterm", "xdotool")
+REQUIRED = ("Xvfb", "xauth", "dbus-run-session", "startxfce4", "xfce4-panel", "xprop", "xwininfo", "xterm", "xdotool")
 
 
 @pytest.mark.skipif(os.name != "posix" or not hasattr(os, "uname") or os.uname().sysname != "Linux", reason="Linux desktop integration")
@@ -22,14 +22,14 @@ def test_virtual_xfce_capture_and_input(tmp_path):
     marker = tmp_path / "input-received"
     ready = tmp_path / "input-ready"
     with VirtualDisplay(1024, 768) as desktop:
-        screen = Screen()
+        screen = Screen(allow_wayland=True)
         frame = screen.frame()
         colors = frame.getcolors(maxcolors=1_000_000)
         assert colors and len(colors) > 8, "Xfce capture is blank or uniform"
         assert any(max(pixel) > 32 for _, pixel in colors), "captured desktop is entirely black"
 
         tree = subprocess.run([shutil.which("xwininfo"), "-root", "-tree"], capture_output=True, text=True, check=True)
-        assert "xfce4-panel" in tree.stdout.lower() or subprocess.run([shutil.which("pgrep"), "-u", str(os.getuid()), "-x", "xfce4-panel"]).returncode == 0
+        assert "xfce4-panel" in tree.stdout.lower(), "XFCE panel window is not present on the virtual display"
 
         desktop.launch(["sh", "-c", "echo expected-app-error >&2; exit 7"])
         for _ in range(30):
@@ -71,3 +71,27 @@ def test_virtual_xfce_capture_and_input(tmp_path):
                 break
             time.sleep(0.1)
         assert marker.exists() and marker.read_text() == "t", "XTest input did not reach the application"
+
+
+@pytest.mark.skipif(os.name != "posix" or not hasattr(os, "uname") or os.uname().sysname != "Linux", reason="Linux desktop integration")
+def test_keyboard_interrupt_during_startup_cleans_processes_and_xauthority(monkeypatch):
+    missing = [name for name in REQUIRED if not shutil.which(name)]
+    if missing:
+        pytest.skip(f"Linux desktop integration requirements missing: {', '.join(missing)}")
+
+    old_display = os.environ.get("DISPLAY")
+    old_xauthority = os.environ.get("XAUTHORITY")
+    desktop = VirtualDisplay(1024, 768)
+
+    def interrupt_after_window_manager():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(VirtualDisplay, "_has_visible_desktop", staticmethod(interrupt_after_window_manager))
+    with pytest.raises(KeyboardInterrupt):
+        desktop.__enter__()
+
+    assert desktop.process and desktop.process.poll() is not None
+    assert desktop.session and desktop.session.poll() is not None
+    assert desktop._auth_dir and not os.path.exists(desktop._auth_dir)
+    assert os.environ.get("DISPLAY") == old_display
+    assert os.environ.get("XAUTHORITY") == old_xauthority
