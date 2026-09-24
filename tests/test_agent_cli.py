@@ -59,6 +59,15 @@ def test_click_accepts_positional_or_flag_coordinates(argv):
     assert agent_cli._actions_for(args) == [{"type": "click", "x": 640, "y": 360, "button": "left"}]
 
 
+def test_click_capture_id_is_forwarded_for_screenshot_pixel_coordinates():
+    args = agent_cli.build_parser().parse_args([
+        "click", "--session", "s1", "--x", "7", "--y", "9", "--capture-id", "capture-1"
+    ])
+    assert agent_cli._actions_for(args) == [
+        {"type": "click", "x": 7, "y": 9, "button": "left", "capture_id": "capture-1"}
+    ]
+
+
 def test_click_rejects_mixed_coordinate_forms():
     args = agent_cli.build_parser().parse_args(["click", "--session", "s1", "640", "360", "--x", "1", "--y", "2"])
     with pytest.raises(ValueError, match="do not mix"):
@@ -100,6 +109,7 @@ def test_attach_controller_batches_input_and_releases_held_keys():
     controller = agent_cli._AttachController(FakeClient(), "s1")
     controller.owner = "attach-1"
     controller.frame_id = "geometry"
+    controller.capture_id = "capture-token"
     controller.key("ctrl", True)
     controller.key("l", True)
     controller.key("l", False)
@@ -112,7 +122,7 @@ def test_attach_controller_batches_input_and_releases_held_keys():
     assert calls[0][2] == {"owner": "attach-1"}
     assert calls[0][1][-1] == {
         "type": "drag", "from_x": 10, "from_y": 20, "to_x": 12, "to_y": 25,
-        "button": "left", "frame_id": "geometry"
+        "button": "left", "frame_id": "geometry", "capture_id": "capture-token"
     }
 
     controller.close()

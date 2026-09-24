@@ -335,6 +335,15 @@ class NativeDisplay:
     def __exit__(self, *_: object) -> None:
         self.close()
 
+    def refresh_geometry(self) -> dict[str, Any]:
+        """Refresh the selected output geometry without reading pixel data."""
+        outputs = _outputs(self.environment)
+        monitor = next((output for output in outputs if output["name"] == self.monitor["name"]), None)
+        if monitor is None:
+            raise DesktopError(f"selected Wayland output disappeared: {self.monitor['name']}")
+        self.outputs, self.monitor = outputs, monitor
+        return dict(monitor)
+
     def close(self) -> None:
         if self._runtime:
             runtime = self.environment.get("XDG_RUNTIME_DIR")

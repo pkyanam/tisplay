@@ -47,3 +47,11 @@ Key `name` can be one key or a chord joined by `+`, such as `ctrl+c`. `text` acc
 Capabilities include `engine_version` and `engine_generation`. After an upgrade, existing viewers keep running, but their session IDs belong to the prior generation; start a fresh session for new commands.
 
 A failed request is reported as `tisplay: CODE: message` on stderr and exits nonzero. Errors such as unsupported operations, stale geometry, invalid input, and a busy control lease should be surfaced to the caller. Do not automatically repeat a potentially state-changing input request after an ambiguous failure.
+
+## Internal capture grounding and CUA service
+
+The private JSONL protocol also supports `environment` and `cua-service` requests for session-aware adapters. `environment` requires a session and returns an allowlist of display variables, backend/mode metadata, and the expected private CUA socket path. `cua-service` requires `args.action` (`start`, `status`, or `stop`) and manages one Cua Driver process and private Unix socket for that Tisplay session; its response includes `cua_socket` and the selected `cua_binary` path. The service is stopped when the session stops. These commands are internal protocol operations, not additional CLI commands.
+
+A normal `capture` registers an opaque `frame.capture_id` observation token. It is distinct from the geometry-only `frame_id`. Supply the capture token at the input request level, on an individual input action, or at the batch level to ground coordinates in that screenshot. The daemon maps screenshot pixels through the captured image scale and crop into monitor coordinates; legacy full-display coordinates remain available when no capture token is supplied. A token is valid for 60 seconds, at most 16 observations are retained per session, and the token is consumed by one input call. Unknown, expired, reused, or layout-stale tokens fail with `stale_capture`.
+
+Capture requests may set `register_capture: false` for transient viewer polling. Such captures omit `frame.capture_id` and do not evict retained agent observations; this is intended for streaming and polling paths. Omit the field (or set it to `true`) when the returned image will ground a later input action.

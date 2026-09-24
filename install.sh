@@ -134,7 +134,9 @@ mkdir -p "$APP_DIR/releases" "$BIN_DIR"
 LOCK_CANDIDATE="$APP_DIR/.install-lock"
 mkdir "$LOCK_CANDIDATE" 2>/dev/null || fail "another tisplay installation is in progress; retry after it finishes."
 INSTALL_LOCK="$LOCK_CANDIDATE"
-curl -fsSL "$REPO/archive/refs/heads/main.tar.gz" -o "$TMP_DIR/source.tar.gz" || fail "could not download the public tisplay source; the installed version was left untouched."
+curl -fsSL "https://api.github.com/repos/pkyanam/tisplay/commits/main" -o "$TMP_DIR/commit.json" || fail "could not check the latest tisplay revision; the installed version was left untouched."
+SOURCE_COMMIT=$("$PYTHON" -c 'import json,sys; value=json.load(open(sys.argv[1])).get("sha",""); sys.exit(1) if len(value)!=40 or any(c not in "0123456789abcdef" for c in value) else print(value)' "$TMP_DIR/commit.json") || fail "GitHub returned an invalid source revision."
+curl -fsSL "$REPO/archive/$SOURCE_COMMIT.tar.gz" -o "$TMP_DIR/source.tar.gz" || fail "could not download the pinned tisplay source; the installed version was left untouched."
 if command -v sha256sum >/dev/null 2>&1; then SOURCE_HASH=$(sha256sum "$TMP_DIR/source.tar.gz" | cut -c1-16)
 else SOURCE_HASH=$(shasum -a 256 "$TMP_DIR/source.tar.gz" | cut -c1-16); fi
 RELEASE="$APP_DIR/releases/${SOURCE_HASH}-${PROFILE}"
@@ -152,7 +154,14 @@ if [ "$RELEASE_OK" != yes ]; then
   "$PYTHON" -m venv "$RELEASE_BUILD/venv" || fail "could not create the Python environment."
   "$RELEASE_BUILD/venv/bin/python" -m pip install "$TMP_DIR/source" || fail "Python package installation failed; the installed version was left untouched."
   "$RELEASE_BUILD/venv/bin/tisplay" --version >/dev/null 2>&1 || fail "the installed release failed its version check; the installed version was left untouched."
+  RELEASE_VERSION=$("$RELEASE_BUILD/venv/bin/tisplay" --version)
+  "$PYTHON" -c 'import json,os,sys; p=sys.argv[1]; tmp=p+".tmp"; open(tmp,"w").write(json.dumps({"commit":sys.argv[2],"archive_sha256":sys.argv[3],"profile":sys.argv[4],"version":sys.argv[5]},indent=2)+"\n"); os.replace(tmp,p)' "$RELEASE_BUILD/release.json" "$SOURCE_COMMIT" "$(sha256sum "$TMP_DIR/source.tar.gz" 2>/dev/null | cut -d ' ' -f1 || shasum -a 256 "$TMP_DIR/source.tar.gz" | cut -d ' ' -f1)" "$PROFILE" "$RELEASE_VERSION"
   RELEASE_BUILD=
+fi
+CURRENT_TARGET=$(readlink "$APP_DIR/current" 2>/dev/null || true)
+if [ -n "$CURRENT_TARGET" ] && [ "$CURRENT_TARGET" != "$RELEASE" ]; then
+  ln -s "$CURRENT_TARGET" "$APP_DIR/.previous.$$"
+  "$PYTHON" -c 'import os,sys; os.replace(sys.argv[1],sys.argv[2])' "$APP_DIR/.previous.$$" "$APP_DIR/previous" || fail "could not record the previous release."
 fi
 ln -s "$RELEASE" "$APP_DIR/.current.$$"
 "$PYTHON" -c 'import os,sys; os.replace(sys.argv[1], sys.argv[2])' "$APP_DIR/.current.$$" "$APP_DIR/current" || fail "could not switch the active release."
@@ -171,7 +180,7 @@ case ":$PATH:" in *":$BIN_DIR:"*) ;; *) printf 'Add this to your shell profile i
 if [ "$OS" = Darwin ]; then
   printf 'macOS needs a logged-in desktop. Allow Screen Recording and Accessibility for your terminal or Python in System Settings if prompted.\n'
 elif [ "$PROFILE" = native ]; then
-  printf 'Native mode requires a running supported Wayland compositor; it does not start or reconfigure one.\n'
+  printf 'Native modes use a supported Wayland compositor; --native-headless may start an isolated managed labwc/D-Bus session without changing the system desktop.\n'
   [ "$IS_PI" = yes ] && printf 'Raspberry Pi hardware detected from device-tree metadata.\n'
 else
   printf 'Use --virtual for the private Xvfb + XFCE desktop, or choose a native mode when a supported compositor is already running.\n'

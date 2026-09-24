@@ -57,7 +57,12 @@ def _mock_install_environment(tmp_path, source_archive, *, fail_pip=False):
         "MOCK_FAIL_PIP": "yes" if fail_pip else "no",
     }
     curl = mockbin / "curl"
-    curl.write_text("#!/bin/sh\ncp \"$MOCK_SOURCE_ARCHIVE\" \"$4\"\n")
+    curl.write_text(
+        "#!/bin/sh\n"
+        "case \"$2\" in *api.github.com*) printf '{\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}' > \"$4\" ;;\n"
+        "*) cp \"$MOCK_SOURCE_ARCHIVE\" \"$4\" ;;\n"
+        "esac\n"
+    )
     curl.chmod(0o755)
     return env, pip_log, apt_log
 

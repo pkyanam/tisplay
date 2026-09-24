@@ -59,6 +59,11 @@
       "minLength": 1,
       "maxLength": 64
     },
+    "captureToken": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
     "inputAction": {
       "oneOf": [
         {
@@ -80,6 +85,9 @@
             },
             "frame_id": {
               "$ref": "#/$defs/frameGuard"
+            },
+            "capture_id": {
+              "$ref": "#/$defs/captureToken"
             }
           },
           "additionalProperties": false
@@ -117,6 +125,9 @@
             },
             "frame_id": {
               "$ref": "#/$defs/frameGuard"
+            },
+            "capture_id": {
+              "$ref": "#/$defs/captureToken"
             }
           },
           "additionalProperties": false
@@ -151,6 +162,9 @@
             },
             "frame_id": {
               "$ref": "#/$defs/frameGuard"
+            },
+            "capture_id": {
+              "$ref": "#/$defs/captureToken"
             }
           },
           "additionalProperties": false
@@ -185,6 +199,9 @@
             },
             "frame_id": {
               "$ref": "#/$defs/frameGuard"
+            },
+            "capture_id": {
+              "$ref": "#/$defs/captureToken"
             }
           },
           "additionalProperties": false
@@ -209,6 +226,9 @@
             },
             "frame_id": {
               "$ref": "#/$defs/frameGuard"
+            },
+            "capture_id": {
+              "$ref": "#/$defs/captureToken"
             }
           },
           "additionalProperties": false
@@ -229,6 +249,9 @@
             },
             "frame_id": {
               "$ref": "#/$defs/frameGuard"
+            },
+            "capture_id": {
+              "$ref": "#/$defs/captureToken"
             }
           },
           "additionalProperties": false
@@ -336,6 +359,9 @@
           "type": "integer",
           "minimum": 32,
           "maximum": 10000
+        },
+        "register_capture": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -374,6 +400,9 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 128
+        },
+        "capture_id": {
+          "$ref": "#/$defs/captureToken"
         }
       },
       "additionalProperties": false
@@ -406,6 +435,9 @@
         },
         "stop_on_error": {
           "type": "boolean"
+        },
+        "capture_id": {
+          "$ref": "#/$defs/captureToken"
         }
       },
       "additionalProperties": false
@@ -439,6 +471,20 @@
       },
       "additionalProperties": false
     },
+    "environmentArgs": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "cuaServiceArgs": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": {
+          "enum": ["start", "status", "stop"]
+        }
+      },
+      "additionalProperties": false
+    },
     "request": {
       "type": "object",
       "required": [
@@ -466,7 +512,9 @@
             "input",
             "batch",
             "control",
-            "capabilities"
+            "capabilities",
+            "environment",
+            "cua-service"
           ]
         },
         "session": {
@@ -589,6 +637,42 @@
             "properties": {
               "args": {
                 "$ref": "#/$defs/controlArgs"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "environment"
+              }
+            },
+            "required": ["command"]
+          },
+          "then": {
+            "required": ["session"],
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/environmentArgs"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "cua-service"
+              }
+            },
+            "required": ["command"]
+          },
+          "then": {
+            "required": ["session"],
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/cuaServiceArgs"
               }
             }
           }

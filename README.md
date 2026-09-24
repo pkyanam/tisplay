@@ -32,6 +32,18 @@ To select a different Linux dependency profile, pass the option to Bash:
 curl -fsSL https://github.com/pkyanam/tisplay/raw/refs/heads/main/install.sh | bash -s -- --profile native
 ```
 
+Update an existing installation on the computer that runs it:
+
+```sh
+tisplay update --check
+tisplay update
+tisplay update --rollback
+```
+
+`--check` reads the current GitHub revision and does not change files. Updates build a pinned source revision into a separate release, reuse installed Python dependencies where possible, and switch the active release only after validation. Running sessions are not restarted; start a new session after updating. `--rollback` switches to the previous valid release. Source archives are fetched over HTTPS and recorded with a local SHA-256; GitHub does not publish a signed checksum for these source archives, so this is not a publisher signature. To update a remote computer, run `tisplay update` there over SSH.
+
+From a computer that already has SSH access, `tisplay --host user@computer update --check` and `tisplay --host user@computer update` run the updater on the remote host without opening a port.
+
 ## Usage
 
 Start a local session with:
@@ -87,6 +99,23 @@ To check terminal graphics without opening a desktop, run `tisplay --test-patter
 Automation can select `session start --mode auto|native-existing|native-headless|virtual`; the `--virtual`, `--native`, and `--native-headless` aliases remain available. Use `tisplay attach --view-only` to watch a session without input control. Check `tisplay capabilities` on the target before relying on a backend or operation: compositor and output support varies by machine.
 
 Upgraded clients use a new engine socket generation so a daemon from an older installation can keep serving existing attached viewers. After upgrading, start a new session to use the new client and native features; old session IDs remain with the old daemon until it is stopped.
+
+### Optional Cua Driver
+
+Tisplay can host the pinned Cua Driver 0.28.2 inside a session. The binary is optional and downloaded only when requested; Linux x86_64 and ARM64 archives are checked against the checksums published with the [0.28.2 release](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.28.2). For Linux accessibility trees, install the platform prerequisites (`at-spi2-core` and `libxi6` on Debian-based systems) and use an accessible desktop session.
+
+```sh
+tisplay --host user@computer cua install
+tisplay --host user@computer cua tools
+tisplay --host user@computer cua describe get_window_state
+tisplay --host user@computer cua call --session SESSION list_windows
+tisplay --host user@computer cua call --session SESSION get_window_state \
+  --args '{"pid":123,"window_id":456}' --out state.png
+tisplay --host user@computer cua call --session SESSION click \
+  --args '{"pid":123,"window_id":456,"element_token":"…","snapshot_id":"s…"}'
+```
+
+The element token and snapshot ID come from the preceding `get_window_state` response. Tisplay reuses a private per-session Unix socket so those references survive separate CLI calls, and stops its owned Cua process when the Tisplay session stops. `--out` writes screenshots on the computer running the command; default output omits image bytes. `tisplay --host user@computer cua mcp --session SESSION` bridges the persistent MCP stdio stream over SSH without opening a remote TCP listener. Cua support is experimental and desktop-specific: semantic AT-SPI access is verified on Linux X11, while native labwc accessibility is not yet verified. Check `cua doctor` and the target's accessibility services before relying on element actions. `--raw` prints the complete driver result, including large image data when returned.
 
 ## Development
 

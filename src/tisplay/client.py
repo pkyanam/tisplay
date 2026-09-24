@@ -14,7 +14,9 @@ from typing import Any
 
 from .protocol import MAX_MESSAGE_BYTES, PROTOCOL_VERSION, decode_message, encode_message
 
-ENGINE_GENERATION = 2
+# Generation 3 adds screenshot grounding and session-owned Cua runtimes. An
+# older daemon must not silently accept requests with these semantics missing.
+ENGINE_GENERATION = 3
 
 
 class EngineError(RuntimeError):
@@ -105,6 +107,7 @@ class SessionClient:
     def batch(self, session: str, actions: Any, owner: str | None = None, **args: Any): return self.request("batch", session, actions=actions, **({"owner": owner} if owner else {}), **args)
     def control(self, session: str, action: str, **args: Any): return self.request("control", session, action=action, **args)
     def capabilities(self, session: str | None = None): return self.request("capabilities", session)
+    def environment(self, session: str): return self.request("environment", session)
 
     def close(self) -> None:
         if self._stream:

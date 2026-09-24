@@ -8,7 +8,9 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import signal
+import secrets
 import socket
 import stat
 import subprocess
@@ -45,6 +47,7 @@ class Session:
     keys_down: set[str] = field(default_factory=set)
     buttons_down: set[str] = field(default_factory=set)
     frame_id: str = ""
+    observations: dict[str, dict[str, Any]] = field(default_factory=dict)
     env: dict[str, str | None] = field(default_factory=dict)
     name: str | None = None
     held_owner: str | None = None
@@ -52,6 +55,11 @@ class Session:
     backend: str | None = None
     readiness_reason: str | None = None
     provider_owned: bool = False
+    cua_process: subprocess.Popen | None = None
+    cua_socket_path: str | None = None
+    cua_log: Any = None
+    cua_log_path: str | None = None
+    cua_binary_path: str | None = None
 
     def __post_init__(self) -> None:
         if self.mode is None:
@@ -99,6 +107,8 @@ class Engine:
             if command == "capabilities": return self.capabilities(sid)
             session = self._session(sid)
             if command == "status": return self.describe(session)
+            if command == "environment": return self.environment(session)
+            if command == "cua-service": return self.cua_service(session, args)
             if command == "stop": return self.stop(session)
             if command == "resize": return self.resize(session, args)
             if command == "capture": return self.capture(session, args)
@@ -119,6 +129,8 @@ class Engine:
             raise EngineError("mode must be auto, native-existing, native-headless, or virtual", "invalid_request")
         virtual = mode == "virtual"
         sid = str(args.get("session_id") or uuid.uuid4().hex[:12])
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", sid):
+            raise EngineError("session_id must use letters, digits, underscores, or hyphens (up to 80 characters)", "invalid_request")
         if sid in self.sessions: raise EngineError("session id already exists", "conflict")
         command = args.get("command") or []
         if not isinstance(command, list) or any(not isinstance(x, str) for x in command):
@@ -218,8 +230,219 @@ class Engine:
                 "control": {"owner": s.control_owner if s.control_until > time.time() else None,
                             "expires_at": s.control_until if s.control_until > time.time() else None}}
 
+    def environment(self, s: Session) -> dict[str, Any]:
+        """Return only the display/session variables needed by native adapters."""
+        allowed = ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME",
+                   "DBUS_SESSION_BUS_ADDRESS", "TISPLAY_WAYLAND_OUTPUT")
+        values = {key: value for key in allowed if (value := s.env.get(key))}
+        # dbus-run-session only exports its private bus to the XFCE child tree;
+        # the daemon's environment intentionally never receives that address.
+        if not values.get("DBUS_SESSION_BUS_ADDRESS") and s.virtual and s.desktop and s.desktop.session:
+            bus = self._virtual_session_bus(s)
+            if bus:
+                values["DBUS_SESSION_BUS_ADDRESS"] = bus
+        if s.display and not values.get("DISPLAY") and s.backend != "wayland-native":
+            values["DISPLAY"] = s.display
+        runtime = values.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+        try:
+            info = os.lstat(runtime)
+            if info.st_uid == os.getuid() and stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+                values.setdefault("XDG_RUNTIME_DIR", runtime)
+                cua_socket = str(Path(runtime) / "tisplay" / "cua" / f"{s.id}.sock")
+            else:
+                cua_socket = None
+        except OSError:
+            cua_socket = None
+        return {"environment": values, "backend": s.backend, "mode": s.mode, "cua_socket": cua_socket}
+
+    @staticmethod
+    def _virtual_session_bus(s: Session) -> str | None:
+        root = s.desktop.session
+        try:
+            root_status = Path(f"/proc/{root.pid}/status").read_text()
+            if not re.search(rf"(?m)^Uid:\s+{os.getuid()}\b", root_status):
+                return None
+            root_stat = Path(f"/proc/{root.pid}/stat").read_text()
+            pgid = int(root_stat[root_stat.rfind(")") + 2:].split()[2])
+        except (OSError, ValueError, IndexError):
+            return None
+        try:
+            proc_entries = list(Path("/proc").iterdir())
+        except OSError:
+            return None
+        for entry in proc_entries:
+            if not entry.name.isdigit():
+                continue
+            try:
+                status = (entry / "status").read_text()
+                if not re.search(rf"(?m)^Uid:\s+{os.getuid()}\b", status):
+                    continue
+                stat_line = (entry / "stat").read_text()
+                if int(stat_line[stat_line.rfind(")") + 2:].split()[2]) != pgid:
+                    continue
+                environ = (entry / "environ").read_bytes().split(b"\0")
+                vars_ = dict(item.split(b"=", 1) for item in environ if b"=" in item)
+                if vars_.get(b"DISPLAY", b"").decode(errors="ignore") != s.display:
+                    continue
+                address = vars_.get(b"DBUS_SESSION_BUS_ADDRESS")
+                if address:
+                    return address.decode("utf-8", "strict")
+            except (OSError, ValueError, IndexError, UnicodeError):
+                continue
+        return None
+
+    def _cua_process_environment(self, s: Session, runtime: str) -> dict[str, str]:
+        allowed = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "XDG_DATA_HOME")
+        env = {key: os.environ[key] for key in allowed if os.environ.get(key)}
+        for key, value in self.environment(s)["environment"].items():
+            if value:
+                env[key] = str(value)
+        env["XDG_RUNTIME_DIR"] = runtime
+        env["CUA_DRIVER_RS_TELEMETRY_ENABLED"] = "false"
+        env["CUA_DRIVER_RS_UPDATE_CHECK"] = "false"
+        env["RUST_LOG"] = "warn"
+        if s.backend == "wayland-native":
+            env["CUA_DRIVER_RS_ENABLE_WAYLAND"] = "1"
+        return env
+
+    def cua_service(self, s: Session, args: dict[str, Any]) -> dict[str, Any]:
+        """Own the session-scoped Cua Driver service for reliable teardown."""
+        action = args.get("action")
+        if action not in ("start", "status", "stop"):
+            raise EngineError("cua-service action must be start, status, or stop", "invalid_request")
+        process = s.cua_process
+        if process and process.poll() is not None:
+            self._stop_cua_service(s)
+            process = None
+        if action == "status":
+            return {"running": bool(process), "pid": process.pid if process else None,
+                    "cua_socket": s.cua_socket_path, "cua_binary": s.cua_binary_path}
+        if action == "stop":
+            socket_path = s.cua_socket_path
+            binary_path = s.cua_binary_path
+            self._stop_cua_service(s)
+            return {"running": False, "cua_socket": socket_path, "cua_binary": binary_path}
+        if process:
+            return {"running": True, "started": False, "pid": process.pid,
+                    "cua_socket": s.cua_socket_path, "cua_binary": s.cua_binary_path}
+        runtime = self.environment(s)["environment"].get("XDG_RUNTIME_DIR")
+        if not runtime:
+            raise EngineError("session has no owned XDG_RUNTIME_DIR for its Cua service", "display_unavailable")
+        runtime_path = Path(runtime)
+        try:
+            runtime_info = runtime_path.lstat()
+            if runtime_info.st_uid != os.getuid() or not stat.S_ISDIR(runtime_info.st_mode):
+                raise EngineError("session runtime directory is not a same-user directory", "unsafe_runtime")
+            app_dir = runtime_path / "tisplay"
+            app_dir.mkdir(mode=0o700, exist_ok=True)
+            app_info = app_dir.lstat()
+            if app_info.st_uid != os.getuid() or not stat.S_ISDIR(app_info.st_mode) or stat.S_ISLNK(app_info.st_mode):
+                raise EngineError("Tisplay runtime directory is not a same-user directory", "unsafe_runtime")
+            service_dir = app_dir / "cua"
+            service_dir.mkdir(mode=0o700, exist_ok=True)
+            service_info = service_dir.lstat()
+            if service_info.st_uid != os.getuid() or not stat.S_ISDIR(service_info.st_mode) or stat.S_ISLNK(service_info.st_mode):
+                raise EngineError("Cua service directory is not a private same-user directory", "unsafe_runtime")
+            os.chmod(service_dir, 0o700)
+        except OSError as exc:
+            raise EngineError(f"cannot create private Cua service directory: {exc}", "start_failed") from exc
+        socket_path = service_dir / f"{s.id}.sock"
+        if len(os.fsencode(socket_path)) > 100:
+            raise EngineError("Cua socket path is too long for a Unix-domain socket", "invalid_request")
+        if socket_path.exists() or socket_path.is_symlink():
+            try:
+                info = socket_path.lstat()
+            except OSError as exc:
+                raise EngineError(f"cannot inspect Cua socket path: {exc}", "unsafe_socket") from exc
+            if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+                raise EngineError("Cua socket path already exists and is not an owned socket", "unsafe_socket")
+            raise EngineError("an unowned Cua socket already exists for this session; refusing to replace it", "conflict")
+        data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+        binary = data_home / "tisplay" / "cua" / "current" / "bin" / "cua-driver"
+        if not binary.is_file() or not os.access(binary, os.X_OK):
+            raise EngineError("Cua Driver is not installed for this user", "cua_not_installed")
+        log_path = service_dir / f"{s.id}.log"
+        try:
+            flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+            log_fd = os.open(log_path, flags, 0o600)
+            log_info = os.fstat(log_fd)
+            if log_info.st_uid != os.getuid() or not stat.S_ISREG(log_info.st_mode):
+                os.close(log_fd)
+                raise EngineError("Cua service log is not a regular same-user file", "unsafe_runtime")
+            log = os.fdopen(log_fd, "a+b", buffering=0)
+            env = self._cua_process_environment(s, runtime)
+            process = subprocess.Popen([str(binary), "serve", "--socket", str(socket_path)],
+                                       env=env, stdin=subprocess.DEVNULL, stdout=log,
+                                       stderr=subprocess.STDOUT, cwd=env.get("HOME"), start_new_session=True,
+                                       close_fds=True)
+        except OSError as exc:
+            try: log.close()
+            except (UnboundLocalError, OSError): pass
+            raise EngineError(f"cannot start session-scoped Cua Driver: {exc}", "start_failed") from exc
+        s.cua_process, s.cua_socket_path, s.cua_log, s.cua_log_path, s.cua_binary_path = process, str(socket_path), log, str(log_path), str(binary)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                detail = ""
+                try:
+                    log.flush(); log.seek(0)
+                    detail = log.read(2000).decode("utf-8", "replace")
+                except (OSError, AttributeError):
+                    pass
+                self._stop_cua_service(s)
+                raise EngineError("Cua Driver exited during startup" + (f": {detail.strip()[-1000:]}" if detail else ""), "start_failed")
+            if socket_path.is_socket():
+                os.chmod(socket_path, 0o600)
+                return {"running": True, "started": True, "pid": process.pid, "cua_socket": str(socket_path), "cua_binary": str(binary)}
+            time.sleep(.05)
+        self._stop_cua_service(s)
+        raise EngineError("Cua Driver did not create its private socket before timeout", "start_timeout")
+
+    def _stop_cua_service(self, s: Session) -> None:
+        process, socket_path = s.cua_process, s.cua_socket_path
+        if process:
+            if process.poll() is None:
+                try: os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError: pass
+                try: process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    try: os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError: pass
+                    try: process.wait(timeout=2)
+                    except subprocess.TimeoutExpired: pass
+            # A service may have child workers in the same owned process group.
+            try: os.killpg(process.pid, 0)
+            except ProcessLookupError: pass
+            else:
+                try: os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError: pass
+        if socket_path:
+            path = Path(socket_path)
+            try:
+                info = path.lstat()
+                if stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid():
+                    path.unlink()
+            except OSError:
+                pass
+        if s.cua_log:
+            try: s.cua_log.close()
+            except OSError: pass
+        if s.cua_log_path:
+            try:
+                info = Path(s.cua_log_path).lstat()
+                if stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid():
+                    Path(s.cua_log_path).unlink()
+            except OSError:
+                pass
+        s.cua_process = None
+        s.cua_socket_path = None
+        s.cua_log = None
+        s.cua_log_path = None
+        s.cua_binary_path = None
+
     def stop(self, s: Session) -> dict[str, Any]:
         self._release_all(s)
+        self._stop_cua_service(s)
         if s.desktop: s.desktop.__exit__(None, None, None)
         self.sessions.pop(s.id, None)
         return {"stopped": True, "session_id": s.id}
@@ -304,7 +527,7 @@ class Engine:
             if image.width > max_width: image.thumbnail((max_width, image.height), Image.Resampling.LANCZOS)
         display_width = int(mon["width"]); display_height = int(mon["height"])
         # Geometry token stays stable across animation and changes on monitor/layout change.
-        geom = f"{mon['left']}:{mon['top']}:{display_width}:{display_height}"
+        geom = self._geometry_key(mon)
         frame_id = hashlib.sha256(geom.encode()).hexdigest()[:20]
         s.frame_id = frame_id
         from io import BytesIO
@@ -314,9 +537,68 @@ class Engine:
         png = buf.getvalue()
         meta = {"frame_id": frame_id, "content_id": hashlib.sha256(png).hexdigest()[:20], "timestamp": time.time(), "width": image.width, "height": image.height,
                 "display_width": display_width, "display_height": display_height,
-                "monitor": {"left": mon["left"], "top": mon["top"], "width": mon["width"], "height": mon["height"]},
+                "monitor": {"name": mon.get("name"), "left": mon["left"], "top": mon["top"], "width": mon["width"], "height": mon["height"]},
                 "region": {"x": x, "y": y, "width": native[0], "height": native[1]}}
         return image, {"png": base64.b64encode(png).decode("ascii"), "frame": meta}
+
+    @staticmethod
+    def _geometry_key(mon: dict[str, Any]) -> str:
+        return f"{mon.get('name', '')}:{mon['left']}:{mon['top']}:{mon['width']}:{mon['height']}"
+
+    @staticmethod
+    def _monitor_frame_id(mon: dict[str, Any]) -> str:
+        return hashlib.sha256(Engine._geometry_key(mon).encode()).hexdigest()[:20]
+
+    def _current_monitor(self, s: Session) -> dict[str, Any]:
+        """Read monitor geometry without capturing or encoding a screenshot."""
+        with self.session_env(s):
+            if s.backend == "wayland-native" and s.desktop is not None:
+                monitor = s.desktop.refresh_geometry()
+            else:
+                screen = Screen(allow_wayland=True) if s.virtual else Screen()
+                try:
+                    monitor = dict(screen.monitor)
+                finally:
+                    if hasattr(screen, "grabber"):
+                        screen.grabber.close()
+        monitor.setdefault("left", 0); monitor.setdefault("top", 0)
+        return monitor
+
+    @staticmethod
+    def _expire_observations(s: Session, now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        for token, observation in list(s.observations.items()):
+            if now - observation["timestamp"] > 60:
+                s.observations.pop(token, None)
+        while len(s.observations) > 16:
+            oldest = min(s.observations, key=lambda token: s.observations[token]["timestamp"])
+            s.observations.pop(oldest, None)
+
+    def _register_observation(self, s: Session, frame: dict[str, Any]) -> str:
+        now = time.time()
+        self._expire_observations(s, now)
+        token = secrets.token_urlsafe(24)
+        observation = {key: frame[key] for key in ("frame_id", "width", "height", "display_width", "display_height", "monitor", "region")}
+        observation["timestamp"] = now
+        s.observations[token] = observation
+        self._expire_observations(s, now)
+        return token
+
+    def _resolve_observation(self, s: Session, token: str) -> dict[str, Any]:
+        self._expire_observations(s)
+        observation = s.observations.get(token)
+        if observation is None:
+            raise EngineError("capture_id is unknown or expired; capture a fresh screenshot", "stale_capture")
+        monitor = self._current_monitor(s)
+        current_id = self._monitor_frame_id(monitor)
+        expected = observation["monitor"]
+        if (current_id != observation["frame_id"] or monitor.get("name") != expected.get("name")
+                or monitor["width"] != expected["width"] or monitor["height"] != expected["height"]
+                or monitor.get("left", 0) != expected.get("left", 0) or monitor.get("top", 0) != expected.get("top", 0)):
+            s.observations.pop(token, None)
+            raise EngineError("capture_id is stale because display geometry changed; capture a fresh screenshot", "stale_capture",
+                              {"current_frame_id": current_id})
+        return observation
 
     @staticmethod
     def _screen_adapter(s: Session):
@@ -338,6 +620,11 @@ class Engine:
             with self.session_env(s):
                 if s.desktop and hasattr(s.desktop, "check_command"): s.desktop.check_command()
                 result = self._screen(s, args)[1]
+            register = args.get("register_capture", True)
+            if not isinstance(register, bool):
+                raise EngineError("register_capture must be a boolean", "invalid_request")
+            if register:
+                result["frame"]["capture_id"] = self._register_observation(s, result["frame"])
             if len(json.dumps(result, separators=(",", ":")).encode()) > MAX_MESSAGE_BYTES - 1024:
                 raise EngineError("capture is too large for the protocol response; retry with a smaller scale or max_width", "response_too_large")
             return result
@@ -427,28 +714,58 @@ class Engine:
         if s.control_owner and s.control_until <= now:
             self._release_all(s); s.control_owner, s.control_until, s.held_owner = None, 0, None
         if s.control_until > now and s.control_owner != owner: raise EngineError("control is held by another owner", "control_denied", {"owner": s.control_owner})
-        needs_frame = any(action.get("type") in ("move", "click", "double_click", "drag", "scroll") or action.get("frame_id") is not None for action in actions)
-        if needs_frame:
-            try:
-                with self.session_env(s):
-                    _, result = self._screen(s, {"max_width": 32})
-                frame = result["frame"]
-                latest = frame["frame_id"]
-            except Exception as exc:
-                if isinstance(exc, EngineError): raise
-                raise EngineError(f"cannot validate input coordinates: {exc}", "input_failed") from exc
-        else:
-            latest = s.frame_id or None
-            frame = {"frame_id": latest, "display_width": s.width, "display_height": s.height,
-                     "monitor": {"left": 0, "top": 0}}
+        request_capture_id = args.get("capture_id")
+        if request_capture_id is not None and (not isinstance(request_capture_id, str) or not request_capture_id):
+            raise EngineError("capture_id must be a non-empty string", "invalid_request")
+        action_capture_ids: dict[int, str] = {}
+        for index, action in enumerate(actions):
+            token = action.get("capture_id", request_capture_id)
+            if token is not None:
+                if not isinstance(token, str) or not token:
+                    raise EngineError("capture_id must be a non-empty string", "invalid_request")
+                if request_capture_id is not None and token != request_capture_id:
+                    raise EngineError("action capture_id conflicts with input capture_id", "invalid_request")
+                action_capture_ids[index] = token
+        captured: dict[str, dict[str, Any]] = {}
+        latest: str | None = None
+        frame: dict[str, Any] = {"display_width": s.width, "display_height": s.height,
+                                 "monitor": {"left": 0, "top": 0}}
+        try:
+            for token in set(action_capture_ids.values()):
+                captured[token] = self._resolve_observation(s, token)
+            has_pixels = any(action.get("type") in ("move", "click", "double_click", "drag", "scroll") for action in actions)
+            # For legacy desktop coordinates, read only current geometry. Do not
+            # capture/encode a throwaway PNG just to validate frame_id.
+            if has_pixels and not captured:
+                monitor = self._current_monitor(s)
+                latest = self._monitor_frame_id(monitor)
+                frame = {"frame_id": latest, "display_width": int(monitor["width"]),
+                         "display_height": int(monitor["height"]), "monitor": monitor}
+            elif captured:
+                monitor = next(iter(captured.values()))["monitor"]
+                latest = self._monitor_frame_id(monitor)
+                frame = {"frame_id": latest, "display_width": int(monitor["width"]),
+                         "display_height": int(monitor["height"]), "monitor": monitor}
+            else:
+                latest = s.frame_id or None
+            # A token authorizes one input request, including all actions in a
+            # batch. Consume before dispatch so an uncertain partial action can
+            # never be replayed against stale visual grounding.
+            for token in captured:
+                s.observations.pop(token, None)
+        except (DesktopError, OSError) as exc:
+            raise EngineError(f"cannot validate input coordinates: {exc}", "input_failed") from exc
         results = 0
         try:
             with self.session_env(s):
                 controller = self._controller_adapter(s)
                 try:
-                    for action in actions:
+                    for index, action in enumerate(actions):
                         monitor = frame["monitor"]
-                        self._do_action(s, controller, action, latest or "", frame["display_width"], frame["display_height"], monitor["left"], monitor["top"], owner)
+                        observation = captured.get(action_capture_ids.get(index, ""))
+                        if observation:
+                            monitor = observation["monitor"]
+                        self._do_action(s, controller, action, latest or "", frame["display_width"], frame["display_height"], monitor.get("left", 0), monitor.get("top", 0), owner, observation)
                         results += 1
                 finally: controller.close()
         except EngineError:
@@ -470,12 +787,12 @@ class Engine:
                     try:
                         timeout = min(max(int(action.get("timeout_ms", 1000)), 1), 30000) / 1000
                         interval = min(max(int(action.get("interval_ms", 100)), 20), 1000) / 1000
-                        before = self.capture(s, {"max_width": 400})["png"]
+                        before = self.capture(s, {"max_width": 400, "register_capture": False})["png"]
                         deadline = time.monotonic() + timeout
                         changed = False
                         while time.monotonic() < deadline:
                             time.sleep(min(interval, max(0, deadline-time.monotonic())))
-                            if before != self.capture(s, {"max_width": 400})["png"]:
+                            if before != self.capture(s, {"max_width": 400, "register_capture": False})["png"]:
                                 changed = True; break
                         done.append({"type": "wait", "changed": changed})
                     except EngineError:
@@ -484,7 +801,8 @@ class Engine:
                     continue
                 end = index
                 while end < len(actions) and actions[end].get("type") != "wait": end += 1
-                result = self.input(s, {"actions": actions[index:end], "owner": args.get("owner", "agent")})
+                result = self.input(s, {"actions": actions[index:end], "owner": args.get("owner", "agent"),
+                                        **({"capture_id": args["capture_id"]} if args.get("capture_id") else {})})
                 done.extend({"completed": 1, "frame_id": result.get("frame_id")} for _ in actions[index:end])
                 index = end
             return {"completed": len(done), "results": done}
@@ -493,26 +811,37 @@ class Engine:
                 if action.get("type") == "wait":
                     timeout = min(max(int(action.get("timeout_ms", 1000)), 1), 30000) / 1000
                     interval = min(max(int(action.get("interval_ms", 100)), 20), 1000) / 1000
-                    before = self.capture(s, {"max_width": 400})["png"]
+                    before = self.capture(s, {"max_width": 400, "register_capture": False})["png"]
                     deadline = time.monotonic() + timeout
                     changed = False
                     while time.monotonic() < deadline:
                         time.sleep(min(interval, max(0, deadline-time.monotonic())))
-                        after = self.capture(s, {"max_width": 400})["png"]
+                        after = self.capture(s, {"max_width": 400, "register_capture": False})["png"]
                         if before != after: changed = True; break
                     done.append({"type": "wait", "changed": changed})
-                else: done.append(self.input(s, {"actions": [action], "owner": args.get("owner", "agent")}))
+                else: done.append(self.input(s, {"actions": [action], "owner": args.get("owner", "agent"),
+                                                 **({"capture_id": args["capture_id"]} if args.get("capture_id") else {})}))
             except EngineError as exc:
                 if stop_on_error: raise
                 done.append({"error": {"code": exc.code, "message": str(exc), **({"details": exc.details} if exc.details is not None else {})}})
         return {"completed": len(done), "results": done}
 
-    def _do_action(self, s: Session, c: Any, a: dict[str, Any], frame_id: str, display_width: int, display_height: int, offset_x: int, offset_y: int, owner: str) -> None:
+    def _do_action(self, s: Session, c: Any, a: dict[str, Any], frame_id: str, display_width: int, display_height: int, offset_x: int, offset_y: int, owner: str, observation: dict[str, Any] | None = None) -> None:
         typ = a.get("type")
         if a.get("frame_id") is not None and a["frame_id"] != frame_id:
             raise EngineError("input frame has expired because display geometry changed", "stale_frame", {"current_frame_id": frame_id})
         def xy():
             x, y = int(a["x"]), int(a["y"])
+            if observation:
+                image_w, image_h = int(observation["width"]), int(observation["height"])
+                if x < 0 or y < 0 or x >= image_w or y >= image_h:
+                    raise EngineError("coordinates fall outside the captured image", "invalid_request")
+                region = observation["region"]
+                source_x = int((x + .5) * int(region["width"]) / image_w)
+                source_y = int((y + .5) * int(region["height"]) / image_h)
+                source_x = min(int(region["width"]) - 1, source_x)
+                source_y = min(int(region["height"]) - 1, source_y)
+                return int(region["x"]) + source_x + offset_x, int(region["y"]) + source_y + offset_y
             if x < 0 or y < 0 or x >= display_width or y >= display_height:
                 raise EngineError("coordinates fall outside the primary display", "invalid_request")
             return x + offset_x, y + offset_y
@@ -528,6 +857,20 @@ class Engine:
             if button not in ("left", "middle", "right"): raise EngineError("button must be left, middle, or right", "invalid_request")
             x, y = int(a["from_x"]), int(a["from_y"])
             end_x, end_y = int(a["to_x"]), int(a["to_y"])
+            if observation:
+                original = a
+                try:
+                    a = {"x": x, "y": y}
+                    x, y = xy()
+                    a = {"x": end_x, "y": end_y}
+                    end_x, end_y = xy()
+                finally:
+                    a = original
+                c.button(button, True, x, y)
+                s.buttons_down.add(button)
+                for i in range(1, 11): c.move(round(x+(end_x-x)*i/10), round(y+(end_y-y)*i/10)); time.sleep(.01)
+                c.button(button, False, end_x, end_y); s.buttons_down.discard(button)
+                return
             if any(v < 0 for v in (x, y, end_x, end_y)) or x >= display_width or end_x >= display_width or y >= display_height or end_y >= display_height:
                 raise EngineError("drag coordinates fall outside the primary display", "invalid_request")
             x, y, end_x, end_y = x + offset_x, y + offset_y, end_x + offset_x, end_y + offset_y

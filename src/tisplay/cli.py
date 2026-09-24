@@ -446,7 +446,8 @@ def main() -> None:
         from .daemon import run_stdio
         raise SystemExit(run_stdio())
     agent_commands = {"session", "screenshot", "observe", "state", "click", "double-click", "move", "drag", "scroll",
-                      "text", "type-text", "key", "press-key", "open-url", "act", "wait", "control", "capabilities", "attach"}
+                      "text", "type-text", "key", "press-key", "open-url", "act", "wait", "control", "capabilities", "attach",
+                      "cua", "update"}
     if argv and argv[0] in ("-h", "--help"):
         from .agent_cli import build_parser
         build_parser().print_help()

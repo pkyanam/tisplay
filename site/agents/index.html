@@ -27,6 +27,19 @@ tisplay screenshot --session SESSION_ID --out after.png --json</code></pre>
     <p>Use fresh screenshot coordinates in primary-display pixels. For a remote machine, add <code>--host user@computer</code> to each command; commands use SSH and open no listener port.</p>
     <p>Use <code>tisplay attach --session SESSION_ID --view-only</code> to watch without acquiring input control. Start a fresh session after an upgrade; existing attached viewers and older sessions keep running.</p>
 
+    <h2>Optional semantic tools on Linux</h2>
+    <p>Tisplay can install the MIT-licensed <a href="https://github.com/trycua/cua">Cua Driver</a> v0.28.2 on demand. The CLI validates the Linux x86_64 or ARM64 archive against the checksum published with the <a href="https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.28.2">upstream release</a>. Install AT-SPI prerequisites such as <code>at-spi2-core</code> and <code>libxi6</code> on Debian-based systems before using accessibility trees.</p>
+    <pre><code>tisplay --host user@computer cua install
+tisplay --host user@computer cua tools
+tisplay --host user@computer cua describe get_window_state
+tisplay --host user@computer cua call --session SESSION_ID list_windows
+tisplay --host user@computer cua call --session SESSION_ID get_window_state \
+  --args '{"pid":123,"window_id":456}' --out state.png
+tisplay --host user@computer cua call --session SESSION_ID click \
+  --args '{"pid":123,"window_id":456,"element_token":"…","snapshot_id":"s…"}'
+tisplay --host user@computer cua mcp --session SESSION_ID</code></pre>
+    <p>Use the <code>element_token</code> and <code>snapshot_id</code> returned by <code>get_window_state</code>. The Cua process is private to the Tisplay session and stops with it. <code>--out</code> saves screenshots on the machine running this CLI; image bytes are omitted from normal output. MCP is a persistent stdio stream over SSH, with no remote network listener. Semantic accessibility has passed on Linux X11; native labwc accessibility remains unverified and should be treated as unsupported until AT-SPI and the driver's desktop capabilities are present.</p>
+
     <h2>Display modes</h2>
     <p>Linux selects an available supported desktop. For sessions, <code>--mode native-existing</code> requires an existing native desktop, <code>--mode native-headless</code> may create an isolated labwc/D-Bus session, and <code>--mode virtual</code> starts Xvfb/XFCE. Check capabilities for the actual backend.</p>
     <p>macOS uses the logged-in desktop and requires Screen Recording and Accessibility permissions.</p>
