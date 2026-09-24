@@ -446,6 +446,7 @@ def run_session_viewer(args: argparse.Namespace, client, session_id: str,
             stream_args.test_pattern = False
             stream_args._resolved_mode = stream_args.mode
             managed = {"mode": status.get("mode"), "screen": screen, "controller": controller,
+                       "session_id": session_id,
                        "heartbeat": heartbeat, "reconnect_command": reconnect_command}
             stream_entered = True
             return run(stream_args, managed=managed)
@@ -480,7 +481,7 @@ def run_managed_default(args: argparse.Namespace) -> int:
     try:
         caps = client.capabilities()
         if not (caps.get("session_idle_ttl") and caps.get("viewer_leases")):
-            raise RuntimeError("the running tisplay daemon is too old for reconnectable sessions; use `tisplay --update` first")
+            raise RuntimeError("the running tisplay daemon is too old for reconnectable sessions; run `tisplay update` first")
         mode = "virtual" if args.command else args.mode
         session = None
         if not args.command:
@@ -561,7 +562,12 @@ def run(args: argparse.Namespace, managed: dict[str, object] | None = None) -> i
             if reconnect_command:
                 # Keep this one-time hint in the parent screen's scrollback;
                 # only then enter the alternate screen for the live stream.
-                sys.stdout.write(f"Reconnect to this desktop with:\n{reconnect_command}\n")
+                session_id = managed.get("session_id")
+                hint = (f"Reconnect to this desktop with:\n{reconnect_command}\n"
+                        "This session remains available for 15 minutes after disconnect.")
+                if session_id:
+                    hint += f" Stop it early with: tisplay session stop --session {session_id}"
+                sys.stdout.write(hint + "\n")
                 sys.stdout.flush()
             with Terminal(sys.stdin.fileno()):
                 try:
