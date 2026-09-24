@@ -20,11 +20,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from PIL import Image, ImageChops
 
+from . import __version__
 from .capture import DesktopError, Screen, VirtualDisplay, discover_accessible_x11_display, make_controller
-from .client import EngineError, socket_path
+from .client import ENGINE_GENERATION, EngineError, socket_path
 from .protocol import MAX_MESSAGE_BYTES, PROTOCOL_VERSION, decode_message, encode_message
 
 
@@ -46,20 +48,30 @@ class Session:
     env: dict[str, str | None] = field(default_factory=dict)
     name: str | None = None
     held_owner: str | None = None
+    mode: str | None = None
+    backend: str | None = None
+    readiness_reason: str | None = None
+    provider_owned: bool = False
+
+    def __post_init__(self) -> None:
+        if self.mode is None:
+            self.mode = "virtual" if self.virtual else "native-existing"
+        if self.virtual:
+            self.provider_owned = True
 
 
 class Engine:
     def __init__(self) -> None:
         self.sessions: dict[str, Session] = {}
         self.lock = threading.RLock()
-        self.base_env = {k: os.environ.get(k) for k in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY")}
+        self.base_env = {k: os.environ.get(k) for k in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "TISPLAY_WAYLAND_OUTPUT", "LABWC_FALLBACK_OUTPUT", "DBUS_SESSION_BUS_ADDRESS", "DBUS_SESSION_BUS_PID")}
         if sys.platform.startswith("linux") and not self.base_env.get("DISPLAY"):
             found = discover_accessible_x11_display()
             if found: self.base_env["DISPLAY"] = found
 
     @contextmanager
     def session_env(self, s: Session):
-        old = {k: os.environ.get(k) for k in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY")}
+        old = {k: os.environ.get(k) for k in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "TISPLAY_WAYLAND_OUTPUT", "LABWC_FALLBACK_OUTPUT", "DBUS_SESSION_BUS_ADDRESS", "DBUS_SESSION_BUS_PID")}
         for key in old:
             value = s.env.get(key)
             if value is None: os.environ.pop(key, None)
@@ -90,6 +102,7 @@ class Engine:
             if command == "stop": return self.stop(session)
             if command == "resize": return self.resize(session, args)
             if command == "capture": return self.capture(session, args)
+            if command == "open-url": return self.open_url(session, args)
             if command == "input": return self.input(session, args)
             if command == "batch": return self.batch(session, args)
             if command == "control": return self.control(session, args)
@@ -99,21 +112,29 @@ class Engine:
         width, height = int(args.get("width", 1280)), int(args.get("height", 800))
         if not 320 <= width <= 7680 or not 240 <= height <= 4320:
             raise EngineError("width or height is outside supported bounds", "invalid_request")
-        virtual = bool(args.get("virtual", False))
+        mode = args.get("mode")
+        if mode is None:
+            mode = "virtual" if args.get("virtual", False) else "auto"
+        if mode not in ("auto", "native-existing", "native-headless", "virtual"):
+            raise EngineError("mode must be auto, native-existing, native-headless, or virtual", "invalid_request")
+        virtual = mode == "virtual"
         sid = str(args.get("session_id") or uuid.uuid4().hex[:12])
         if sid in self.sessions: raise EngineError("session id already exists", "conflict")
         command = args.get("command") or []
         if not isinstance(command, list) or any(not isinstance(x, str) for x in command):
             raise EngineError("command must be a list of strings", "invalid_request")
         if command and not virtual:
-            raise EngineError("launching a command requires virtual:true", "invalid_request")
+            raise EngineError("launching a command requires mode=virtual", "invalid_request")
         desktop = None
+        virtual_env = None
+        native_env = None
         if virtual:
             if any(s.virtual for s in self.sessions.values()):
                 raise EngineError("only one virtual desktop can be active per daemon", "resource_busy")
             desktop = VirtualDisplay(width, height)
             try:
                 desktop.__enter__()
+                virtual_env = {k: os.environ.get(k) for k in self.base_env}
                 if command: desktop.launch(command)
             except Exception as exc:
                 desktop.__exit__(None, None, None)
@@ -125,24 +146,75 @@ class Engine:
                 for key, value in self.base_env.items():
                     if value is None: os.environ.pop(key, None)
                     else: os.environ[key] = value
-                screen = Screen()
+                selected_mode = mode
+                native_ready = False
+                if sys.platform.startswith("linux") and mode in ("auto", "native-existing"):
+                    try:
+                        from .native import native_available
+                        native_ready = bool(native_available().get("available"))
+                    except ImportError:
+                        native_ready = False
+                if mode == "auto":
+                    selected_mode = "native-existing"
+                    if os.environ.get("WAYLAND_DISPLAY") and not native_ready:
+                        selected_mode = "virtual"
+                    elif sys.platform.startswith("linux") and not native_ready and not os.environ.get("DISPLAY"):
+                        found = discover_accessible_x11_display()
+                        if found:
+                            os.environ["DISPLAY"] = found
+                        else:
+                            selected_mode = "virtual"
+                if selected_mode == "virtual":
+                    # Legacy implicit fallback, used only by auto. Explicit native
+                    # requests are never redirected to an Xfce desktop.
+                    desktop = VirtualDisplay(width, height)
+                    desktop.__enter__()
+                    virtual_env = {k: os.environ.get(k) for k in self.base_env}
+                    display = os.environ.get("DISPLAY")
+                    virtual = True
+                    mode = "virtual"
+                    screen = Screen(allow_wayland=True)
+                elif selected_mode == "native-headless" or (selected_mode == "native-existing" and (native_ready or os.environ.get("WAYLAND_DISPLAY"))):
+                    from .native import NativeDisplay
+                    display_context = NativeDisplay(require_headless=selected_mode == "native-headless", width=width, height=height)
+                    display_context.__enter__()
+                    desktop = display_context
+                    screen = display_context
+                    native_env = getattr(display_context, "environment_for_session", None) or getattr(display_context, "environment", None)
+                    display = getattr(display_context, "display", None)
+                    mode = selected_mode
+                elif selected_mode == "native-existing":
+                    screen = Screen()
+                    display = self.base_env.get("DISPLAY")
+                    mode = "native-existing"
+                else:
+                    raise DesktopError("native Wayland is unavailable; use --virtual to create an isolated Xfce desktop")
                 width, height = int(screen.monitor["width"]), int(screen.monitor["height"])
-                screen.grabber.close()
-                display = self.base_env.get("DISPLAY")
+                if screen is not desktop and hasattr(screen, "close"):
+                    screen.close()
+                if screen is not desktop and hasattr(screen, "grabber"):
+                    screen.grabber.close()
             except DesktopError as exc:
+                if desktop:
+                    desktop.__exit__(None, None, None)
                 raise EngineError(str(exc), "display_unavailable") from exc
             finally:
                 for key, value in old_env.items():
                     if value is None: os.environ.pop(key, None)
                     else: os.environ[key] = value
-        selected_env = {k: os.environ.get(k) for k in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY")} if virtual else self.base_env.copy()
-        session = Session(sid, width, height, virtual, display, desktop, command, env=selected_env, name=args.get("name"))
+        selected_env = virtual_env if virtual else (native_env or self.base_env.copy())
+        session = Session(sid, width, height, virtual, display, desktop, command, env=selected_env, name=args.get("name"), mode=mode,
+                          backend="virtual-x11" if virtual else ("wayland-native" if mode.startswith("native") and selected_env.get("WAYLAND_DISPLAY") else "x11"),
+                          readiness_reason="ready" if virtual or display else "native desktop connected",
+                          provider_owned=bool(virtual or getattr(desktop, "owned", False)))
         self.sessions[sid] = session
         return self.describe(session)
 
     def describe(self, s: Session) -> dict[str, Any]:
         return {"session_id": s.id, "name": s.name, "display": s.display, "width": s.width, "height": s.height,
-                "virtual": s.virtual, "created": s.created, "running": True,
+                "virtual": s.virtual, "mode": s.mode, "backend": s.backend,
+                "provider_ownership": "session" if s.provider_owned else "shared",
+                "readiness": {"ready": True, "reason": s.readiness_reason}, "created": s.created, "running": True,
                 "control": {"owner": s.control_owner if s.control_until > time.time() else None,
                             "expires_at": s.control_until if s.control_until > time.time() else None}}
 
@@ -174,17 +246,43 @@ class Engine:
         xlib = importlib.util.find_spec("Xlib") is not None
         backend = "xtest" if linux_x11 and xlib else ("pynput" if not sys.platform.startswith("linux") and pynput else None)
         text = (not sys.platform.startswith("linux") and pynput) or (linux_x11 and shutil_which("xdotool") is not None)
-        return {"capture": True, "pointer": backend is not None, "keyboard": backend is not None,
-                "input_backend": backend, "unicode_text": bool(text),
-                "resize": False, "remote_transport": "ssh-stdio", "control_leases": True}
+        old = {key: os.environ.get(key) for key in self.base_env}
+        try:
+            for key, value in self.base_env.items():
+                if value is None: os.environ.pop(key, None)
+                else: os.environ[key] = value
+            try:
+                from .native import native_available
+                native_info = native_available()
+            except ImportError as exc:
+                native_info = {"available": False, "reason": f"native provider unavailable: {exc}"}
+        finally:
+            for key, value in old.items():
+                if value is None: os.environ.pop(key, None)
+                else: os.environ[key] = value
+        native = bool(native_info.get("available"))
+        selected = self.sessions.get(sid) if sid else None
+        provider = selected.backend if selected else ("wayland-native" if native else ("x11" if linux_x11 else "platform"))
+        can_manage_headless = sys.platform.startswith("linux") and bool(shutil_which("labwc") and shutil_which("dbus-run-session"))
+        return {"engine_version": __version__, "engine_generation": ENGINE_GENERATION,
+                "capture": bool(native or linux_x11 or not sys.platform.startswith("linux")), "pointer": backend is not None or native,
+                "keyboard": backend is not None or native,
+                "input_backend": "wayvnc-unix" if native else backend, "unicode_text": bool(text or native),
+                "resize": False, "remote_transport": "ssh-stdio", "control_leases": True,
+                "provider": provider,
+                "native": {"available": native, "reason": native_info.get("reason", "ready"), "outputs": native_info.get("outputs", [])},
+                "virtual_output": {"supported": sys.platform.startswith("linux"), "available": bool(native_info.get("headless")),
+                                   "provisionable": can_manage_headless,
+                                   "reason": "active NOOP output detected" if native_info.get("headless") else ("managed labwc headless session can be started" if can_manage_headless else "requires labwc and dbus-run-session")}}
 
     def _screen(self, s: Session, args: dict[str, Any]) -> tuple[Image.Image, dict[str, Any]]:
-        screen = Screen()
+        screen = self._screen_adapter(s)
         try:
             image = screen.frame(max_width=None)
             mon = dict(screen.monitor)
         finally:
-            screen.grabber.close()
+            if screen is not s.desktop and hasattr(screen, "close"): screen.close()
+            if screen is not s.desktop and hasattr(screen, "grabber"): screen.grabber.close()
         region = args.get("region")
         if region:
             x, y = int(region.get("x", 0)), int(region.get("y", 0))
@@ -218,15 +316,63 @@ class Engine:
                 "region": {"x": x, "y": y, "width": native[0], "height": native[1]}}
         return image, {"png": base64.b64encode(png).decode("ascii"), "frame": meta}
 
+    @staticmethod
+    def _screen_adapter(s: Session):
+        if s.backend == "wayland-native":
+            if s.desktop is None:
+                raise DesktopError("native session provider has stopped")
+            return s.desktop
+        return Screen(allow_wayland=s.virtual)
+
+    @staticmethod
+    def _controller_adapter(s: Session):
+        if s.backend == "wayland-native":
+            from .native import NativeWaylandController
+            return NativeWaylandController()
+        return make_controller()
+
     def capture(self, s: Session, args: dict[str, Any]) -> dict[str, Any]:
         try:
             with self.session_env(s):
-                if s.desktop: s.desktop.check_command()
+                if s.desktop and hasattr(s.desktop, "check_command"): s.desktop.check_command()
                 result = self._screen(s, args)[1]
             if len(json.dumps(result, separators=(",", ":")).encode()) > MAX_MESSAGE_BYTES - 1024:
                 raise EngineError("capture is too large for the protocol response; retry with a smaller scale or max_width", "response_too_large")
             return result
         except (DesktopError, OSError) as exc: raise EngineError(str(exc), "capture_failed") from exc
+
+    def open_url(self, s: Session, args: dict[str, Any]) -> dict[str, Any]:
+        url = args.get("url")
+        if not isinstance(url, str) or not 1 <= len(url) <= 4096 or any(ord(ch) < 0x20 or ch.isspace() for ch in url):
+            raise EngineError("URL must be a non-empty HTTP or HTTPS URL without whitespace", "invalid_request")
+        try:
+            parsed = urlsplit(url)
+            valid_url = parsed.scheme.lower() in ("http", "https") and bool(parsed.hostname)
+            _ = parsed.port
+        except ValueError:
+            valid_url = False
+        if not valid_url or parsed.username is not None or parsed.password is not None:
+            raise EngineError("URL must use HTTP or HTTPS and include a valid host (credentials are not accepted)", "invalid_request")
+        owner = str(args.get("owner", "agent"))
+        if s.control_owner and s.control_until > time.time() and s.control_owner != owner:
+            raise EngineError("control is held by another owner", "control_denied", {"owner": s.control_owner})
+        if sys.platform == "darwin":
+            command = ["open", url]
+        elif sys.platform.startswith("linux"):
+            opener = shutil_which("xdg-open") or shutil_which("gio")
+            if not opener:
+                raise EngineError("URL opening is unavailable; install xdg-utils or GLib gio on the target", "unsupported")
+            command = [opener, *( ["open"] if Path(opener).name == "gio" else [] ), url]
+        else:
+            raise EngineError("URL opening is unavailable on this operating system", "unsupported")
+        try:
+            with self.session_env(s):
+                process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                           stderr=subprocess.DEVNULL, env=os.environ.copy(),
+                                           start_new_session=True, close_fds=True)
+        except OSError as exc:
+            raise EngineError(f"could not start the session URL opener: {exc}", "start_failed") from exc
+        return {"opened": True, "url": url, "pid": process.pid, "backend": "session-opener"}
 
     def control(self, s: Session, args: dict[str, Any]) -> dict[str, Any]:
         action = args.get("action")
@@ -255,7 +401,22 @@ class Engine:
         if isinstance(actions, dict): actions = [actions]
         if not isinstance(actions, list) or not actions or len(actions) > 500 or any(not isinstance(x, dict) for x in actions):
             raise EngineError("actions must be a non-empty array of at most 500 objects", "invalid_request")
-        return actions
+        normalized = []
+        for original in actions:
+            action = dict(original)
+            if action.get("type") == "press_key": action["type"] = "key"
+            elif action.get("type") == "type_text": action["type"] = "text"
+            if action.get("type") in ("click", "double_click"):
+                if "mouse_button" in action:
+                    if "button" in action: raise EngineError("use either button or mouse_button, not both", "invalid_request")
+                    action["button"] = action.pop("mouse_button")
+                if "click_count" in action:
+                    count = action.pop("click_count")
+                    if count not in (1, 2): raise EngineError("click_count must be 1 or 2", "invalid_request")
+                    if action["type"] == "double_click" and count == 1: raise EngineError("double_click cannot use click_count=1", "invalid_request")
+                    if count == 2: action["type"] = "double_click"
+            normalized.append(action)
+        return normalized
 
     def input(self, s: Session, args: dict[str, Any]) -> dict[str, Any]:
         actions = self._actions(args)
@@ -264,22 +425,28 @@ class Engine:
         if s.control_owner and s.control_until <= now:
             self._release_all(s); s.control_owner, s.control_until, s.held_owner = None, 0, None
         if s.control_until > now and s.control_owner != owner: raise EngineError("control is held by another owner", "control_denied", {"owner": s.control_owner})
-        try:
-            with self.session_env(s):
-                image, frame = self._screen(s, {"max_width": 32})
-            # Pulling frame metadata independently avoids coordinate staleness under geometry changes.
-            latest = frame["frame"]["frame_id"]
-        except Exception as exc:
-            if isinstance(exc, EngineError): raise
-            raise EngineError(f"cannot validate input coordinates: {exc}", "input_failed") from exc
+        needs_frame = any(action.get("type") in ("move", "click", "double_click", "drag", "scroll") or action.get("frame_id") is not None for action in actions)
+        if needs_frame:
+            try:
+                with self.session_env(s):
+                    _, result = self._screen(s, {"max_width": 32})
+                frame = result["frame"]
+                latest = frame["frame_id"]
+            except Exception as exc:
+                if isinstance(exc, EngineError): raise
+                raise EngineError(f"cannot validate input coordinates: {exc}", "input_failed") from exc
+        else:
+            latest = s.frame_id or None
+            frame = {"frame_id": latest, "display_width": s.width, "display_height": s.height,
+                     "monitor": {"left": 0, "top": 0}}
         results = 0
         try:
             with self.session_env(s):
-                controller = make_controller()
+                controller = self._controller_adapter(s)
                 try:
                     for action in actions:
-                        monitor = frame["frame"]["monitor"]
-                        self._do_action(s, controller, action, latest, frame["frame"]["display_width"], frame["frame"]["display_height"], monitor["left"], monitor["top"], owner)
+                        monitor = frame["monitor"]
+                        self._do_action(s, controller, action, latest or "", frame["display_width"], frame["display_height"], monitor["left"], monitor["top"], owner)
                         results += 1
                 finally: controller.close()
         except EngineError:
@@ -293,6 +460,32 @@ class Engine:
         actions = self._actions(args)
         done = []
         stop_on_error = bool(args.get("stop_on_error", True))
+        if stop_on_error:
+            index = 0
+            while index < len(actions):
+                if actions[index].get("type") == "wait":
+                    action = actions[index]
+                    try:
+                        timeout = min(max(int(action.get("timeout_ms", 1000)), 1), 30000) / 1000
+                        interval = min(max(int(action.get("interval_ms", 100)), 20), 1000) / 1000
+                        before = self.capture(s, {"max_width": 400})["png"]
+                        deadline = time.monotonic() + timeout
+                        changed = False
+                        while time.monotonic() < deadline:
+                            time.sleep(min(interval, max(0, deadline-time.monotonic())))
+                            if before != self.capture(s, {"max_width": 400})["png"]:
+                                changed = True; break
+                        done.append({"type": "wait", "changed": changed})
+                    except EngineError:
+                        raise
+                    index += 1
+                    continue
+                end = index
+                while end < len(actions) and actions[end].get("type") != "wait": end += 1
+                result = self.input(s, {"actions": actions[index:end], "owner": args.get("owner", "agent")})
+                done.extend({"completed": 1, "frame_id": result.get("frame_id")} for _ in actions[index:end])
+                index = end
+            return {"completed": len(done), "results": done}
         for action in actions:
             try:
                 if action.get("type") == "wait":
@@ -352,7 +545,8 @@ class Engine:
             for key in names:
                 if not isinstance(key, str) or not (len(key) == 1 and key.isprintable() or key.lower() in valid_names or (key.lower().startswith("f") and key[1:].isdigit() and 1 <= int(key[1:]) <= 24)):
                     raise EngineError(f"unsupported key name: {key}", "invalid_request")
-            names = [key if len(key) == 1 else key.lower() for key in names]
+            has_chord = len(names) > 1
+            names = [key.lower() if has_chord and len(key) == 1 and key.isascii() and key.isalpha() else (key if len(key) == 1 else key.lower()) for key in names]
             if typ == "key":
                 for key in names: c.key(key, True); s.keys_down.add(key)
                 for key in reversed(names): c.key(key, False); s.keys_down.discard(key)
@@ -376,7 +570,7 @@ class Engine:
             s.held_owner = None
             return
         try:
-            with self.session_env(s): c = make_controller()
+            with self.session_env(s): c = self._controller_adapter(s)
         except Exception: s.keys_down.clear(); s.buttons_down.clear(); return
         try:
             with self.session_env(s):

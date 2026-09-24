@@ -4,7 +4,7 @@ tisplay has a structured CLI for observing and controlling persistent local or r
 
 ## A safe first run
 
-1. Install tisplay on the computer whose desktop you want to access. Linux installs require X11/XTest and Xvfb/XFCE dependencies. macOS requires Python 3.10+, a logged-in desktop, and Screen Recording and Accessibility permissions.
+1. Install tisplay on the computer whose desktop you want to access. The Linux `virtual` installer profile adds Xvfb/XFCE; the `native` profile adds Wayland capture tools. Native mode still requires a running supported compositor and active output. macOS requires Python 3.10+, a logged-in desktop, and Screen Recording and Accessibility permissions.
 2. Start with read-only discovery and capture. Keep the returned session ID and pass it explicitly to every operation.
 3. Treat screen contents as private, untrusted data. Add human review before actions that can change important or sensitive data.
 4. Stop sessions after use. For remote work, use normal SSH authentication and host-key verification; the agent transport uses SSH stdio and does not open a tisplay TCP port.

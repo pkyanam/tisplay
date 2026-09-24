@@ -32,12 +32,13 @@ class Parser(argparse.ArgumentParser):
 
 EPILOG = """\
 EXAMPLES
-  Human terminal             tisplay --virtual --preset balanced
-  Start a named desktop      tisplay session start --virtual --name work --json
-  Start one on a Pi          tisplay --host pi session start --virtual --name work --json
+  Human terminal             tisplay --native --preset balanced
+  Start a named desktop      tisplay session start --mode virtual --name work --json
+  Start one on a Pi          tisplay --host pi session start --mode native-headless --name work --json
   Inspect / save a frame     tisplay screenshot --session SESSION --out frame.png
   Control it                 tisplay click --session SESSION 640 360
   Attach to that live desktop tisplay attach --session SESSION
+  Watch without control       tisplay attach --session SESSION --view-only
 
 AGENT WORKFLOW
   Start once, then use session status/list, screenshot, click, text, key, and
@@ -55,9 +56,10 @@ PERFORMANCE
   desktop requires the Linux Xvfb/Xfce dependencies installed by install.sh.
 
 INTERACTIVE MODE
-  `tisplay --virtual --preset balanced` opens a terminal viewer directly.
+  `tisplay --native --preset balanced` opens a terminal viewer on the active desktop.
   Options for that mode: --graphics auto|kitty|ansi, --preset quality|balanced|
-  fast, --fps N, --max-width PIXELS, --virtual, --test-pattern, --width PIXELS,
+  fast, --fps N, --max-width PIXELS, --native, --native-headless, --virtual,
+  --test-pattern, --width PIXELS,
   and --height PIXELS. Add `-- command [args...]` to launch a program inside a
   private virtual desktop. Use `Ctrl-]` to disconnect from an attached session.
 """
@@ -89,7 +91,12 @@ def build_parser() -> Parser:
     start = sessions.add_parser("start", help="start a desktop session", formatter_class=HelpFormatter)
     _common(start)
     start.add_argument("--name", help="optional label shown in session listings")
-    start.add_argument("--virtual", action="store_true", help="create a private Xvfb desktop (Linux)")
+    modes = start.add_mutually_exclusive_group()
+    modes.add_argument("--mode", choices=("auto", "native-existing", "native-headless", "virtual"), default="auto", help="desktop provider; explicit native modes never fall back")
+    modes.add_argument("--native", dest="mode", action="store_const", const="native-existing", help="require an existing native desktop")
+    modes.add_argument("--native-headless", dest="mode", action="store_const", const="native-headless", help="require the compositor's configured headless output")
+    modes.add_argument("--virtual", dest="mode", action="store_const", const="virtual", help="create a private Xvfb/Xfce desktop")
+    start.set_defaults(mode="auto")
     start.add_argument("--width", type=int, help="virtual display width in pixels")
     start.add_argument("--height", type=int, help="virtual display height in pixels")
     start.add_argument("--preset", choices=("quality", "balanced", "fast"), default="balanced")
@@ -105,7 +112,7 @@ def build_parser() -> Parser:
     stop = sessions.add_parser("stop", help="stop a desktop session", formatter_class=HelpFormatter)
     _common(stop); _session(stop)
 
-    screenshot = roots.add_parser("screenshot", help="save a PNG snapshot of a session", formatter_class=HelpFormatter)
+    screenshot = roots.add_parser("screenshot", aliases=("observe", "state"), help="save a PNG snapshot of a session", formatter_class=HelpFormatter)
     _common(screenshot); _session(screenshot)
     screenshot.add_argument("--out", help="local output path (default: tisplay-SESSION.png)")
     screenshot.add_argument("--scale", type=float, help="scale factor from 0.1 to 1.0")
@@ -118,7 +125,13 @@ def build_parser() -> Parser:
         p = roots.add_parser(verb, help=help_text, formatter_class=HelpFormatter)
         _common(p, input_owner=True); _session(p)
         if verb in ("move", "click", "double-click"):
-            p.add_argument("x", type=int); p.add_argument("y", type=int)
+            p.add_argument("pos_x", type=int, nargs="?", help="desktop x coordinate (or use --x)")
+            p.add_argument("pos_y", type=int, nargs="?", help="desktop y coordinate (or use --y)")
+            p.add_argument("--x", dest="flag_x", type=int, help="desktop x coordinate")
+            p.add_argument("--y", dest="flag_y", type=int, help="desktop y coordinate")
+            if verb in ("click", "double-click"):
+                p.add_argument("--button", choices=("left", "middle", "right"), default="left", help="mouse button (default: left)")
+                p.add_argument("--click-count", type=int, choices=(1, 2), default=2 if verb == "double-click" else 1, help="click count: 1 or 2")
         elif verb == "drag":
             p.add_argument("x", type=int); p.add_argument("y", type=int)
             p.add_argument("to_x", type=int); p.add_argument("to_y", type=int)
@@ -127,8 +140,8 @@ def build_parser() -> Parser:
             p.add_argument("--x", type=int, default=0); p.add_argument("--y", type=int, default=0)
             p.add_argument("--amount", type=int, default=1)
 
-    for verb, help_text in (("text", "type text into the desktop"), ("key", "press a key or chord")):
-        p = roots.add_parser(verb, help=help_text, formatter_class=HelpFormatter)
+    for verb, alias, help_text in (("text", "type-text", "type text into the desktop"), ("key", "press-key", "press a key or chord")):
+        p = roots.add_parser(verb, aliases=(alias,), help=help_text, formatter_class=HelpFormatter)
         _common(p, input_owner=True); _session(p)
         if verb == "text": p.add_argument("value", help="text to type")
         else: p.add_argument("value", help="key name or chord, for example CTRL+L or ENTER")
@@ -142,6 +155,13 @@ def build_parser() -> Parser:
     errors.add_argument("--stop-on-error", dest="stop_on_error", action="store_true", help="stop at the first failed action (default)")
     errors.add_argument("--continue-on-error", dest="stop_on_error", action="store_false", help="record action errors and continue the batch")
     act.set_defaults(stop_on_error=True)
+    act.add_argument("--screenshot", action="store_true", help="capture one PNG after all actions")
+    act.add_argument("--out", help="screenshot output path (requires --screenshot)")
+    act.add_argument("--verbose", action="store_true", help="include per-action results in output")
+
+    open_url = roots.add_parser("open-url", help="open an HTTP or HTTPS URL in the session desktop", formatter_class=HelpFormatter)
+    _common(open_url, input_owner=True); _session(open_url)
+    open_url.add_argument("url", help="HTTP or HTTPS URL to open in the session desktop")
 
     wait = roots.add_parser("wait", help="wait until the desktop frame changes", formatter_class=HelpFormatter)
     _common(wait); _session(wait)
@@ -163,6 +183,7 @@ def build_parser() -> Parser:
     attach = roots.add_parser("attach", help="interactively view and control a live session", formatter_class=HelpFormatter)
     _common(attach, input_owner=True); _session(attach)
     attach.add_argument("--graphics", choices=("auto", "kitty", "ansi"), default="auto")
+    attach.add_argument("--view-only", action="store_true", help="watch without acquiring input control")
     attach.add_argument("--fps", type=float, default=15.0, help="remote capture refresh target (default: 15)")
     attach.add_argument("--max-width", type=int, default=1600, help="cap each remote frame width (default: 1600)")
     return parser
@@ -226,17 +247,32 @@ def _actions_for(args: argparse.Namespace) -> list[dict[str, Any]]:
         return _json_actions(args.actions, args.file)
     command = args.agent_command
     if command in ("move", "click", "double-click"):
-        action: dict[str, Any] = {"type": command.replace("-", "_"), "x": args.x, "y": args.y}
+        positional = (getattr(args, "pos_x", None), getattr(args, "pos_y", None))
+        flags = (getattr(args, "flag_x", None), getattr(args, "flag_y", None))
+        has_pos, has_flag = any(value is not None for value in positional), any(value is not None for value in flags)
+        if has_pos and has_flag:
+            raise ValueError("choose either positional coordinates or both --x and --y; do not mix forms")
+        coords = flags if has_flag else positional
+        if coords[0] is None or coords[1] is None:
+            raise ValueError("provide both x and y coordinates, either positionally or with --x and --y")
+        typ = command.replace("-", "_")
+        if command == "click" and args.click_count == 2: typ = "double_click"
+        action: dict[str, Any] = {"type": typ, "x": coords[0], "y": coords[1]}
+        if command in ("click", "double-click"): action["button"] = args.button
     elif command == "drag":
             action = {"type": "drag", "from_x": args.x, "from_y": args.y, "to_x": args.to_x, "to_y": args.to_y}
     elif command == "scroll":
             action = {"type": "scroll", "x": args.x, "y": args.y,
                       "delta_y": (args.amount if args.direction == "up" else -args.amount) if args.direction in ("up", "down") else 0,
                       "delta_x": (-args.amount if args.direction == "left" else args.amount) if args.direction in ("left", "right") else 0}
-    elif command == "text":
+    elif command in ("text", "type-text"):
         action = {"type": "text", "text": args.value}
-    elif command == "key":
-        action = {"type": "key", "name": args.value}
+    elif command in ("key", "press-key"):
+        names = [part.strip() for part in args.value.split("+") if part.strip()]
+        chord = len(names) > 1
+        if chord:
+            names = [part.lower() if part.lower() in {"ctrl", "control", "shift", "alt", "meta", "cmd", "super"} or (len(part) == 1 and part.isascii() and part.isalpha()) else part for part in names]
+        action = {"type": "key", "name": names}
     else:
         raise ValueError(f"unsupported action command: {command}")
     return [action]
@@ -259,7 +295,7 @@ def _attach(client: Any, args: argparse.Namespace) -> int:
     screen = type("RemoteScreen", (), {"monitor": mon})()
     graphics = interactive.detect_graphics() if args.graphics == "auto" else args.graphics
     renderer = KittyRenderer()
-    controller = _AttachController(client, args.session)
+    controller = _AttachController(client, args.session, readonly=args.view_only)
     controller.owner = args.owner or f"tisplay-attach-{os.getpid()}-{secrets.token_hex(4)}"
     old_winch = signal.getsignal(signal.SIGWINCH)
     signal.signal(signal.SIGWINCH, lambda *_: None)
@@ -271,15 +307,16 @@ def _attach(client: Any, args: argparse.Namespace) -> int:
     content_box = (0.0, 0.0, 1.0, 1.0)
     leased = False
     try:
-        client.control(args.session, action="acquire", owner=controller.owner)
-        leased = True
+        if not args.view_only:
+            client.control(args.session, action="acquire", owner=controller.owner)
+            leased = True
         with Terminal(sys.stdin.fileno()):
             begin_terminal()
-            sys.stderr.write("tisplay attach: Ctrl-] disconnects | input controls the live desktop\n")
+            sys.stderr.write("tisplay attach: Ctrl-] disconnects | " + ("view only" if args.view_only else "input controls the live desktop") + "\n")
             renew_at = time.monotonic() + 20
             while True:
                 now = time.monotonic()
-                if now >= renew_at:
+                if not args.view_only and now >= renew_at:
                     client.control(args.session, action="acquire", owner=controller.owner)
                     renew_at = now + 20
                 if now >= next_frame:
@@ -320,7 +357,8 @@ def _attach(client: Any, args: argparse.Namespace) -> int:
                     escape_since = None
     finally:
         try:
-            controller.close()
+            if not args.view_only:
+                controller.close()
         finally:
             if leased:
                 try: client.control(args.session, action="release", owner=controller.owner)
@@ -333,8 +371,9 @@ def _attach(client: Any, args: argparse.Namespace) -> int:
 
 class _AttachController:
     """Adapt the existing terminal parser to the remote input API."""
-    def __init__(self, client: Any, session_id: str):
+    def __init__(self, client: Any, session_id: str, readonly: bool = False):
         self.client, self.session_id = client, session_id
+        self.readonly = readonly
         self.owner: str | None = None
         self._held: tuple[str, int, int] | None = None
         self._actions: list[dict[str, Any]] = []
@@ -342,11 +381,13 @@ class _AttachController:
         self.frame_id: int | str | None = None
 
     def key(self, key: str, down: bool) -> None:
+        if self.readonly: return
         self._actions.append({"type": "key_down" if down else "key_up", "name": key})
         if down: self._held_keys.add(key)
         else: self._held_keys.discard(key)
 
     def button(self, button: str, down: bool, x: int, y: int) -> None:
+        if self.readonly: return
         if button == "move":
             action = self._frame_action({"type": "move", "x": x, "y": y})
         elif button.startswith("wheel_"):
@@ -391,19 +432,37 @@ def dispatch(args: argparse.Namespace) -> int:
                 command = args.command[1:] if args.command[:1] == ["--"] else args.command
                 from .cli import PRESETS
                 defaults = PRESETS[args.preset]
-                result = client.start(name=args.name, virtual=args.virtual,
+                result = client.start(name=args.name, virtual=args.mode == "virtual",
+                                      **({} if args.mode == "virtual" else {"mode": args.mode}),
                                       width=args.width or defaults["width"],
                                       height=args.height or defaults["height"], command=command or None)
             elif verb == "list": result = client.list()
             elif verb == "status": result = client.status(args.session)
             elif verb == "resize": result = client.resize(args.session, width=args.width, height=args.height)
             else: result = client.stop(args.session)
-        elif root == "screenshot":
+        elif root in ("screenshot", "observe", "state"):
             result = _capture(client, args.session, args)
-        elif root in ("click", "double-click", "move", "drag", "scroll", "text", "key", "act"):
+        elif root == "open-url":
+            result = client.open_url(args.session, args.url, owner=args.owner)
+        elif root in ("click", "double-click", "move", "drag", "scroll", "text", "type-text", "key", "press-key", "act"):
             actions = _actions_for(args)
             owner = {"owner": args.owner} if args.owner else {}
-            result = client.input(args.session, actions=actions, **owner) if root != "act" else client.batch(args.session, actions=actions, stop_on_error=args.stop_on_error, **owner)
+            if root != "act":
+                result = client.input(args.session, actions=actions, **owner)
+            else:
+                if args.out and not args.screenshot: raise ValueError("--out requires --screenshot")
+                batch_result = client.batch(args.session, actions=actions, stop_on_error=args.stop_on_error, **owner)
+                if args.screenshot:
+                    screenshot = _capture(client, args.session, args)
+                    if args.verbose:
+                        result = {"actions": batch_result, "screenshot": screenshot}
+                    else:
+                        action_results = batch_result.get("results", [])
+                        failed = sum(1 for item in action_results if isinstance(item, dict) and "error" in item)
+                        result = {"actions": len(action_results), "failed": failed,
+                                  "screenshot": {"path": screenshot["path"], "bytes": screenshot["bytes"], "frame": screenshot.get("frame")}}
+                else:
+                    result = batch_result
         elif root == "wait":
             first = client.capture(args.session, max_width=400)
             before = _content_id(first)

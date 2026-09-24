@@ -107,6 +107,14 @@
             "button": {
               "$ref": "#/$defs/button"
             },
+            "mouse_button": {
+              "$ref": "#/$defs/button"
+            },
+            "click_count": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2
+            },
             "frame_id": {
               "$ref": "#/$defs/frameGuard"
             }
@@ -191,6 +199,7 @@
             "type": {
               "enum": [
                 "key",
+                "press_key",
                 "key_down",
                 "key_up"
               ]
@@ -212,7 +221,7 @@
           ],
           "properties": {
             "type": {
-              "const": "text"
+              "enum": ["text", "type_text"]
             },
             "text": {
               "type": "string",
@@ -262,6 +271,9 @@
         },
         "virtual": {
           "type": "boolean"
+        },
+        "mode": {
+          "enum": ["auto", "native-existing", "native-headless", "virtual"]
         },
         "width": {
           "type": "integer",
@@ -325,6 +337,15 @@
           "minimum": 32,
           "maximum": 10000
         }
+      },
+      "additionalProperties": false
+    },
+    "openUrlArgs": {
+      "type": "object",
+      "required": ["url"],
+      "properties": {
+        "url": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "owner": {"type": "string", "minLength": 1, "maxLength": 128}
       },
       "additionalProperties": false
     },
@@ -441,6 +462,7 @@
             "resize",
             "stop",
             "capture",
+            "open-url",
             "input",
             "batch",
             "control",
@@ -491,6 +513,25 @@
             "properties": {
               "args": {
                 "$ref": "#/$defs/captureArgs"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "open-url"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/openUrlArgs"
               }
             }
           }

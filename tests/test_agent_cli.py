@@ -50,6 +50,30 @@ def test_drag_cli_action_uses_engine_coordinate_contract():
     ]
 
 
+@pytest.mark.parametrize("argv", [
+    ["click", "--session", "s1", "640", "360"],
+    ["click", "--session", "s1", "--x", "640", "--y", "360"],
+])
+def test_click_accepts_positional_or_flag_coordinates(argv):
+    args = agent_cli.build_parser().parse_args(argv)
+    assert agent_cli._actions_for(args) == [{"type": "click", "x": 640, "y": 360, "button": "left"}]
+
+
+def test_click_rejects_mixed_coordinate_forms():
+    args = agent_cli.build_parser().parse_args(["click", "--session", "s1", "640", "360", "--x", "1", "--y", "2"])
+    with pytest.raises(ValueError, match="do not mix"):
+        agent_cli._actions_for(args)
+
+
+def test_click_count_and_key_aliases_normalize_to_engine_actions():
+    click = agent_cli.build_parser().parse_args(["click", "--session", "s1", "--x", "1", "--y", "2", "--click-count", "2", "--button", "right"])
+    key = agent_cli.build_parser().parse_args(["press-key", "--session", "s1", "CTRL+L"])
+    text = agent_cli.build_parser().parse_args(["type-text", "--session", "s1", "hello"])
+    assert agent_cli._actions_for(click) == [{"type": "double_click", "x": 1, "y": 2, "button": "right"}]
+    assert agent_cli._actions_for(key) == [{"type": "key", "name": ["ctrl", "l"]}]
+    assert agent_cli._actions_for(text) == [{"type": "text", "text": "hello"}]
+
+
 def test_start_resolves_preset_dimensions_and_omits_preset(monkeypatch):
     calls = []
 
@@ -93,6 +117,54 @@ def test_attach_controller_batches_input_and_releases_held_keys():
 
     controller.close()
     assert calls[-1][1] == [{"type": "key_up", "name": "ctrl"}]
+
+
+def test_view_only_attach_controller_never_queues_input():
+    class FakeClient:
+        def input(self, *_args, **_kwargs):
+            raise AssertionError("view-only attach must not send input")
+
+    controller = agent_cli._AttachController(FakeClient(), "s1", readonly=True)
+    controller.key("a", True)
+    controller.button("left", True, 1, 2)
+    controller.flush()
+    controller.close()
+
+
+def test_open_url_command_preserves_owner(monkeypatch, capsys):
+    calls = []
+
+    class FakeClient:
+        def open_url(self, session, url, owner=None):
+            calls.append((session, url, owner))
+            return {"opened": True}
+        def close(self): pass
+
+    monkeypatch.setattr(agent_cli, "_client", lambda _host: FakeClient())
+    args = agent_cli.build_parser().parse_args(["open-url", "--session", "s1", "--owner", "operator", "https://example.com"])
+    assert agent_cli.dispatch(args) == 0
+    assert calls == [("s1", "https://example.com", "operator")]
+    assert '"opened": true' in capsys.readouterr().out
+
+
+def test_act_screenshot_returns_compact_summary_by_default(monkeypatch, capsys):
+    class FakeClient:
+        def batch(self, session, actions, **kwargs):
+            return {"completed": 2, "results": [{"completed": 1}, {"completed": 1}]}
+        def close(self): pass
+
+    monkeypatch.setattr(agent_cli, "_client", lambda _host: FakeClient())
+    monkeypatch.setattr(agent_cli, "_capture", lambda _client, _session, _args: {
+        "path": "/tmp/frame.png", "bytes": 123, "frame": {"frame_id": "geometry"}
+    })
+    args = agent_cli.build_parser().parse_args([
+        "act", "--session", "s1", "--actions", '[{"type":"press_key","name":"ctrl+l"}]',
+        "--screenshot", "--out", "frame.png",
+    ])
+    assert agent_cli.dispatch(args) == 0
+    output = capsys.readouterr().out
+    assert '"actions": 2' in output and '"path": "/tmp/frame.png"' in output
+    assert '"results"' not in output
 
 
 def test_json_engine_error_is_one_machine_readable_stdout_object(monkeypatch, capsys):

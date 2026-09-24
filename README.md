@@ -20,10 +20,16 @@
 
 ## Install
 
-Run this on the computer whose desktop you want to access. The installer places `tisplay` in `~/.local/bin` and installs the required dependencies.
+Run this on the computer whose desktop you want to access. The installer places `tisplay` in `~/.local/bin`. Its default `virtual` profile installs the Xvfb/XFCE fallback. Choose `native` to install the managed labwc/Wayland provider tools; on Raspberry Pi OS, the desktop session package is added when available from the configured apt sources. Choose `minimal` for Python prerequisites only.
 
 ```sh
 curl -fsSL https://github.com/pkyanam/tisplay/raw/refs/heads/main/install.sh | bash
+```
+
+To select a different Linux dependency profile, pass the option to Bash:
+
+```sh
+curl -fsSL https://github.com/pkyanam/tisplay/raw/refs/heads/main/install.sh | bash -s -- --profile native
 ```
 
 ## Usage
@@ -46,13 +52,13 @@ If `~/.local/bin` is on the remote account's `PATH`, you can use `ssh -t user@co
 
 ### Displays and terminals
 
-On Linux, `tisplay` captures an accessible X11 desktop. If no display is available, it starts a private Xvfb screen with a full Xfce desktop. Use `--virtual` to force a private desktop, or append `--` and a command to launch an application in it:
+On Linux, `tisplay` automatically selects an available supported desktop, then uses the installed virtual fallback when no native display is available. Use `--native` to require a supported existing native desktop, `--native-headless` to create or use an isolated headless Wayland compositor, or `--virtual` to force a private Xvfb/XFCE desktop. Existing native sessions are reused without changing the system compositor. Append `--` and a command to launch an application in a virtual desktop:
 
 ```sh
 ssh -t user@server '~/.local/bin/tisplay --virtual -- firefox --no-remote'
 ```
 
-Direct Wayland desktop capture is not supported. On macOS, use a logged-in desktop and grant your terminal or Python **Screen Recording** and **Accessibility** permissions when prompted; macOS has no virtual-display mode.
+Native Wayland support depends on the active compositor, installed tools, and reported capabilities. `--native-headless` can start an isolated labwc/D-Bus session when needed; it does not replace or reconfigure the system desktop. On macOS, use a logged-in desktop and grant your terminal or Python **Screen Recording** and **Accessibility** permissions when prompted; macOS has no virtual-display mode.
 
 Kitty Graphics Protocol terminals, including Ghostty-based Cmux, show full-color losslessly compressed frames inline. Other terminals use an ANSI true-color half-block renderer, which fits two vertical pixels into each character cell. For detailed images, the SSH client's terminal must support Kitty graphics; otherwise `--graphics ansi` selects the compatible fallback.
 
@@ -70,11 +76,17 @@ These are starting values: explicit `--fps`, `--max-width`, `--width`, and `--he
 --fps N                     refresh target, 1 to 60 (default comes from preset)
 --max-width PX              capture width cap (default comes from preset)
 --virtual                   force a full Xfce desktop on Xvfb (Linux)
+--native                    require a supported existing native desktop
+--native-headless           use an isolated headless Wayland desktop
 --test-pattern              show synthetic color fields without desktop access
 --width PX --height PX      virtual desktop size (default comes from preset)
 ```
 
 To check terminal graphics without opening a desktop, run `tisplay --test-pattern`. It displays four color fields through the selected renderer; press `Ctrl-]` to quit.
+
+Automation can select `session start --mode auto|native-existing|native-headless|virtual`; the `--virtual`, `--native`, and `--native-headless` aliases remain available. Use `tisplay attach --view-only` to watch a session without input control. Check `tisplay capabilities` on the target before relying on a backend or operation: compositor and output support varies by machine.
+
+Upgraded clients use a new engine socket generation so a daemon from an older installation can keep serving existing attached viewers. After upgrading, start a new session to use the new client and native features; old session IDs remain with the old daemon until it is stopped.
 
 ## Development
 

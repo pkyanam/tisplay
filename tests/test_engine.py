@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from tisplay.daemon import Engine, EngineError, Session, _response
-from tisplay.client import SessionClient
+from tisplay.client import SessionClient, socket_path
 from tisplay.protocol import decode_message, encode_message
 
 
@@ -33,6 +33,11 @@ def test_protocol_rejects_unsupported_version_and_invalid_ssh_host():
         SessionClient(host="user@some host")
 
 
+def test_new_engine_uses_generation_scoped_socket(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    assert socket_path() == tmp_path / "tisplay" / "engine-v2.sock"
+
+
 def test_input_uses_source_pixels_and_requires_lease_for_held_keys(monkeypatch):
     engine = Engine()
     class FakeScreen:
@@ -59,6 +64,49 @@ def test_input_uses_source_pixels_and_requires_lease_for_held_keys(monkeypatch):
     assert ("button", "left", True, 42, 31) in fake.events
     assert ("key", "ctrl", True) in fake.events
     assert not session.keys_down
+
+
+def test_key_only_input_skips_capture_and_normalizes_control_chord(monkeypatch):
+    engine = Engine()
+    session = Session("keys", 800, 600)
+    fake = FakeController()
+    monkeypatch.setattr(engine, "_screen", lambda *_: (_ for _ in ()).throw(AssertionError("key-only input must not capture")))
+    monkeypatch.setattr("tisplay.daemon.make_controller", lambda: fake)
+    result = engine.input(session, {"actions": [{"type": "press_key", "name": "CTRL+L"}]})
+    assert result == {"completed": 1, "frame_id": None}
+    assert fake.events == [("key", "ctrl", True), ("key", "l", True), ("key", "l", False), ("key", "ctrl", False)]
+
+
+def test_batch_coalesces_actions_until_observation_boundary():
+    engine = Engine()
+    session = Session("batch", 800, 600)
+    calls = []
+    engine.input = lambda _session, args: calls.append((_session, args)) or {"completed": len(args["actions"]), "frame_id": None}
+    result = engine.batch(session, {"actions": [
+        {"type": "key", "name": "ctrl+l"},
+        {"type": "type_text", "text": "hello"},
+    ]})
+    assert len(calls) == 1
+    assert calls[0][0] is session
+    assert [a["type"] for a in calls[0][1]["actions"]] == ["key", "text"]
+    assert result["completed"] == 2
+
+
+def test_open_url_is_validated_and_uses_session_environment(monkeypatch):
+    engine = Engine()
+    session = Session("native", 800, 600, env={"DISPLAY": None, "WAYLAND_DISPLAY": "wayland-test", "XDG_RUNTIME_DIR": "/run/user/1000"})
+    calls = []
+    class Started: pid = 123
+    monkeypatch.setattr("tisplay.daemon.sys.platform", "linux")
+    monkeypatch.setattr("tisplay.daemon.shutil_which", lambda _name: "/usr/bin/xdg-open")
+    monkeypatch.setattr("tisplay.daemon.subprocess.Popen", lambda command, **kwargs: calls.append((command, kwargs["env"].copy())) or Started())
+    result = engine.open_url(session, {"url": "https://example.com/path"})
+    assert result["opened"] is True and result["pid"] == 123
+    assert calls[0][0] == ["/usr/bin/xdg-open", "https://example.com/path"]
+    assert calls[0][1]["WAYLAND_DISPLAY"] == "wayland-test"
+    for url in ("file:///etc/passwd", "javascript:alert(1)", "https://user:pass@example.com"):
+        with pytest.raises(EngineError, match="HTTP or HTTPS"):
+            engine.open_url(session, {"url": url})
 
 
 def test_resize_reports_unsupported_instead_of_claiming_success():

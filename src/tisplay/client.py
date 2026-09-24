@@ -14,6 +14,8 @@ from typing import Any
 
 from .protocol import MAX_MESSAGE_BYTES, PROTOCOL_VERSION, decode_message, encode_message
 
+ENGINE_GENERATION = 2
+
 
 class EngineError(RuntimeError):
     def __init__(self, message: str, code: str = "engine_error", details: Any = None):
@@ -23,7 +25,7 @@ class EngineError(RuntimeError):
 
 def socket_path() -> Path:
     base = Path(os.environ.get("XDG_RUNTIME_DIR", f"/tmp/tisplay-{os.getuid()}"))
-    return base / "tisplay" / "engine.sock"
+    return base / "tisplay" / f"engine-v{ENGINE_GENERATION}.sock"
 
 
 class SessionClient:
@@ -97,6 +99,8 @@ class SessionClient:
     def resize(self, session: str, **args: Any): return self.request("resize", session, **args)
     def stop(self, session: str): return self.request("stop", session)
     def capture(self, session: str | None = None, **args: Any): return self.request("capture", session, **args)
+    def open_url(self, session: str, url: str, owner: str | None = None):
+        return self.request("open-url", session, url=url, **({"owner": owner} if owner else {}))
     def input(self, session: str, actions: Any, owner: str | None = None): return self.request("input", session, actions=actions, **({"owner": owner} if owner else {}))
     def batch(self, session: str, actions: Any, owner: str | None = None, **args: Any): return self.request("batch", session, actions=actions, **({"owner": owner} if owner else {}), **args)
     def control(self, session: str, action: str, **args: Any): return self.request("control", session, action=action, **args)

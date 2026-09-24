@@ -309,18 +309,38 @@ def startup_display(args: argparse.Namespace):
     original_display = os.environ.get("DISPLAY")
     auto_virtual = False
     discovered_display = None
-    if sys.platform.startswith("linux") and not args.virtual and not original_display:
+    requested = getattr(args, "mode", "auto")
+    if getattr(args, "virtual", False):
+        requested = "virtual"
+    if requested == "auto" and sys.platform.startswith("linux") and os.environ.get("WAYLAND_DISPLAY"):
+        try:
+            from .native import native_available
+            requested = "native-existing" if native_available().get("available") else "virtual"
+        except ImportError:
+            requested = "virtual"
+    if requested == "auto" and sys.platform.startswith("linux") and not original_display:
         discovered_display = discover_accessible_x11_display()
         if discovered_display:
             os.environ["DISPLAY"] = discovered_display
         else:
             auto_virtual = True
-    use_virtual = args.virtual or auto_virtual
+    if requested == "auto":
+        requested = "virtual" if auto_virtual else "native-existing"
+    use_virtual = requested == "virtual"
+    args._resolved_mode = requested
     if use_virtual:
         missing = [name for name in ("Xvfb", "xauth", "dbus-run-session", "startxfce4", "xfce4-panel", "xprop") if not shutil.which(name)]
         if missing:
             raise DesktopError(f"Full virtual desktop dependencies missing ({', '.join(missing)}). Re-run install.sh to install Xfce, D-Bus, Xvfb, and X11 tools.")
-    context = VirtualDisplay(args.width, args.height) if use_virtual else nullcontext()
+    if use_virtual:
+        context = VirtualDisplay(args.width, args.height)
+    elif requested == "native-headless" or (requested == "native-existing" and os.environ.get("WAYLAND_DISPLAY")):
+        from .native import NativeDisplay
+        context = NativeDisplay(require_headless=requested == "native-headless", width=args.width, height=args.height)
+    elif requested == "native-existing" and sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or discovered_display):
+        raise DesktopError("native desktop unavailable; use --virtual to create an isolated Xfce desktop")
+    else:
+        context = nullcontext()
     try:
         with context as display:
             yield display, use_virtual
@@ -350,8 +370,13 @@ def run(args: argparse.Namespace) -> int:
         if use_virtual and args.command:
             display.launch(args.command)
         test_pattern = getattr(args, "test_pattern", False)
-        screen = TestPatternScreen(args.width, args.height) if test_pattern else Screen(allow_wayland=use_virtual)
-        controller = NoopController() if test_pattern else make_controller()
+        if test_pattern:
+            screen, controller = TestPatternScreen(args.width, args.height), NoopController()
+        elif args._resolved_mode.startswith("native") and display is not None:
+            from .native import NativeDisplay, NativeWaylandController
+            screen, controller = display, NativeWaylandController()
+        else:
+            screen, controller = Screen(allow_wayland=use_virtual), make_controller()
         fps, max_width, compression_level, _, _ = resolve_performance(args.preset, args.fps, args.max_width, args.width, args.height)
         kitty_renderer = KittyRenderer(compression_level=compression_level)
         pending = bytearray()
@@ -420,8 +445,8 @@ def main() -> None:
     if argv == ["--engine-stdio"]:
         from .daemon import run_stdio
         raise SystemExit(run_stdio())
-    agent_commands = {"session", "screenshot", "click", "double-click", "move", "drag", "scroll",
-                      "text", "key", "act", "wait", "control", "capabilities", "attach"}
+    agent_commands = {"session", "screenshot", "observe", "state", "click", "double-click", "move", "drag", "scroll",
+                      "text", "type-text", "key", "press-key", "open-url", "act", "wait", "control", "capabilities", "attach"}
     if argv and argv[0] in ("-h", "--help"):
         from .agent_cli import build_parser
         build_parser().print_help()
@@ -448,7 +473,11 @@ def main() -> None:
     parser.add_argument("--preset", choices=tuple(PRESETS), default="balanced", help="quality keeps source resolution, balanced targets 60 fps, fast reduces capture and bandwidth (default: balanced)")
     parser.add_argument("--fps", type=float, default=None, help="refresh target (default comes from --preset; up to 60)")
     parser.add_argument("--max-width", type=int, default=None, help="capture width cap in pixels (default comes from --preset; quality has no cap)")
-    parser.add_argument("--virtual", action="store_true", help="force a private Xfce desktop on Xvfb on Linux")
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("--native", dest="mode", action="store_const", const="native-existing", help="require the active desktop; never fall back")
+    mode_group.add_argument("--native-headless", dest="mode", action="store_const", const="native-headless", help="require an active native compositor with its configured headless output")
+    mode_group.add_argument("--virtual", dest="mode", action="store_const", const="virtual", help="force a private Xfce desktop on Xvfb on Linux")
+    parser.set_defaults(mode="auto")
     parser.add_argument("--test-pattern", action="store_true", help="stream synthetic color bars without opening a desktop or injecting input")
     parser.add_argument("--width", type=int, default=None, help="virtual display width (default comes from --preset)")
     parser.add_argument("--height", type=int, default=None, help="virtual display height (default comes from --preset)")

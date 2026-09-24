@@ -7,6 +7,7 @@
   const hostInputs = {
     ssh: { input: document.getElementById('ssh-host'), error: document.getElementById('host-error') },
     headless: { input: document.getElementById('headless-host'), error: document.getElementById('headless-error') },
+    wayland: { input: document.getElementById('wayland-host'), error: document.getElementById('wayland-error') },
   };
   let activeMode = 'local';
 
@@ -35,11 +36,11 @@
     copyButton.disabled = !host;
     error.textContent = !host ? 'Enter a host such as alice@workstation.' : '';
     if (!host) {
-      command.textContent = activeMode === 'headless' ? "ssh -t HOST '~/.local/bin/tisplay --virtual'" : "ssh -t HOST '~/.local/bin/tisplay'";
+      command.textContent = activeMode === 'headless' ? "ssh -t HOST '~/.local/bin/tisplay --virtual'" : activeMode === 'wayland' ? "ssh -t HOST '~/.local/bin/tisplay --native-headless'" : "ssh -t HOST '~/.local/bin/tisplay'";
       return;
     }
     const executable = '~/.local/bin/tisplay';
-    const remote = activeMode === 'headless' ? `${executable} --virtual` : executable;
+    const remote = activeMode === 'headless' ? `${executable} --virtual` : activeMode === 'wayland' ? `${executable} --native-headless` : executable;
     // ssh passes a single remote command string to the account's shell. The
     // destination is validated above. The remote command is fixed; local
     // quoting keeps it one SSH argument, then the remote shell expands the

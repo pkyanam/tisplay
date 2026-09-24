@@ -1,57 +1,29 @@
-# Agent quickstart
+# Quickstart
 
-## Discover
-
-Read the installed command surface and backend capabilities first:
+Start a session and keep its returned ID for every command:
 
 ```sh
-tisplay --help
-tisplay capabilities --json
+tisplay session start --json
 ```
 
-Local commands connect to a per-user daemon, which starts on demand. For a remote session, pass an SSH destination with `--host`; the client connects using SSH stdio, so keep SSH authentication and host-key checks enabled.
+Take a screenshot, choose an action from what it shows, then inspect the result:
 
 ```sh
-tisplay --host alice@workstation capabilities --json
-tisplay --host alice@workstation session list --json
-```
-
-Avoid shell interpolation for untrusted values. If invoking from code, pass arguments as an array. `--host` is an SSH destination, not a shell snippet.
-
-## Start and inspect a session
-
-Start a private virtual desktop on Linux, save the returned session ID, then inspect and capture it:
-
-```sh
-tisplay session start --virtual --name agent-check --json
-tisplay session status --session SESSION_ID --json
 tisplay screenshot --session SESSION_ID --out screen.png --json
+tisplay click --session SESSION_ID --x 640 --y 360 --json
+tisplay text --session SESSION_ID 'hello' --json
+tisplay key --session SESSION_ID CTRL+L --json
+tisplay screenshot --session SESSION_ID --out after.png --json
 ```
 
-For an SSH host, use `tisplay --host alice@workstation ...` before each command. Screenshot files are written on the machine running the client, including when the session is remote. The JSON result includes the resolved local path, file byte count, and frame metadata; the PNG itself is in the file.
+Coordinates are pixels in the primary display. To watch a live session without input control, use `tisplay attach --session SESSION_ID --view-only`. To use another machine, add `--host user@computer` to each command; tisplay uses SSH and opens no listener port.
 
-## Act
-
-Send only the smallest action needed, using source-pixel coordinates from the primary display. Inspect a fresh screenshot before choosing coordinates. A compact sequence can be sent with `act`:
-
-```sh
-tisplay act --session SESSION_ID --actions '[{"type":"click","x":640,"y":360},{"type":"text","text":"hello"}]' --json
-```
-
-For longer action lists, use `--actions @actions.json` or `--file actions.json`; use `--file -` for standard input. An action list is ordered. A failure can happen after earlier actions completed, so do not blindly retry an entire list.
-
-## Finish
-
-Stop a session when it is no longer needed:
+Stop the session when finished:
 
 ```sh
 tisplay session stop --session SESSION_ID --json
 ```
 
-`attach` is for a person at an interactive terminal: it streams frames and forwards terminal input, and <kbd>Ctrl</kbd>+<kbd>]</kbd> disconnects. It requires a TTY.
+Linux chooses an available supported desktop. `--native` requires an existing native desktop; explicit `--native-headless` can create an isolated labwc/D-Bus session. `--virtual` starts a private Xvfb/XFCE desktop. Native support depends on installed tools and compositor capabilities; inspect `tisplay capabilities --json` on the target. macOS uses the logged-in desktop with Screen Recording and Accessibility permissions.
 
-## Platform limits
-
-- Linux uses an accessible X11 desktop. `--virtual` starts a private Xvfb/XFCE desktop. Direct Wayland capture is unsupported.
-- macOS uses the logged-in desktop and requires Screen Recording and Accessibility permissions. It has no virtual desktop mode.
-- `tisplay capabilities --json` reports capture, pointer, keyboard, Unicode text, virtual resize, remote transport, and control lease support for the current backend. The virtual resize operation currently reports unsupported; stop and restart with desired dimensions. `content_id` changes when captured PNG content changes; geometry-only `frame_id` remains stable during animation.
+For action batches, output fields, SSH examples, and the JSONL transport schema, see the [CLI protocol](protocol.md), [examples](examples/README.md), and [schema](../../schemas/agent-v1.schema.json).

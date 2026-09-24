@@ -5,11 +5,11 @@ The supported machine interface is the CLI. Run `tisplay --help` and command-spe
 ## Global options and sessions
 
 - `--host DESTINATION` selects SSH transport; omit it to use the local per-user daemon. It can appear before a command or on a command that accepts common options.
-- `session start [--virtual] [--name LABEL] [--width PX --height PX] [--preset quality|balanced|fast]` creates a session and returns its ID. `--virtual` is Linux-only.
+- `session start [--mode auto|native-existing|native-headless|virtual] [--name LABEL] [--width PX --height PX] [--preset quality|balanced|fast]` creates a session and returns its ID. `--virtual`, `--native`, and `--native-headless` are mode aliases. Explicit native headless mode may start an isolated labwc/D-Bus session; it does not replace or reconfigure the system desktop.
 - `session list`, `session status --session ID`, and `session stop --session ID` enumerate, inspect, and stop sessions.
 - `session resize --session ID WIDTH HEIGHT` is currently unsupported by the backend. Stop and restart with the desired dimensions.
 - `screenshot --session ID [--out PATH] [--scale 0.1–1] [--max-width PX] [--region X Y WIDTH HEIGHT]` writes a PNG to a local path. JSON output reports the path and frame metadata, not base64 image bytes.
-- `attach --session ID` provides a live interactive terminal stream and requires a TTY.
+- `attach --session ID [--view-only]` provides a live interactive terminal stream and requires a TTY. `--view-only` watches the screen without acquiring input control.
 
 Pass IDs explicitly. For SSH, commands execute through the host's SSH connection using stdio; no tisplay listening port is opened.
 
@@ -32,7 +32,7 @@ Supported objects:
 {"type":"wait","timeout_ms":1000,"interval_ms":100}
 ```
 
-`move`, `click`, `double_click`, `drag`, `scroll`, `text`, and `key` also have convenience commands. Coordinates are integer pixels local to the primary monitor. Screenshot `--scale`, `--max-width`, and `--region` affect image output only; input coordinates remain source-display pixels. A capture frame's `frame_id` is based on display geometry, so animation does not expire it; including that value on an action prevents acting after the display geometry changes. `content_id` identifies the returned PNG bytes. Coordinates are checked against current primary-display bounds.
+`screenshot` is also available as `observe` or `state`; `text` as `type-text`; and `key` as `press-key`. `click --x X --y Y` and positional coordinates are both accepted. `open-url --session ID URL` opens an HTTP(S) URL in the session desktop. Coordinates are integer pixels local to the primary monitor. Screenshot `--scale`, `--max-width`, and `--region` affect image output only; input coordinates remain source-display pixels. A capture frame's `frame_id` is based on display geometry, so animation does not expire it; including that value on an action prevents acting after the display geometry changes. `content_id` identifies the returned PNG bytes. Coordinates are checked against current primary-display bounds.
 
 Key `name` can be one key or a chord joined by `+`, such as `ctrl+c`. `text` accepts up to 10,000 characters and requires the relevant backend's Unicode text support. Scroll deltas are limited to 100 steps in either direction. The batch wait action bounds timeout at 30 seconds and polling interval to 20–1000 ms.
 
@@ -42,6 +42,6 @@ Key `name` can be one key or a chord joined by `+`, such as `ctrl+c`. `text` acc
 
 ## Capabilities and errors
 
-`capabilities [--session ID] --json` reports support for capture, pointer, keyboard, Unicode text, virtual resize, remote transport, and control leases for the selected backend. Text support can depend on installed backend tools. The current engine reports `resize: false`.
+`capabilities [--session ID] --json` reports support for capture, pointer, keyboard, Unicode text, virtual resize, remote transport, and control leases for the selected backend. Native support depends on the compositor, active output, and installed tools. Text support can depend on installed backend tools. The current engine reports `resize: false`.
 
 A failed request is reported as `tisplay: CODE: message` on stderr and exits nonzero. Errors such as unsupported operations, stale geometry, invalid input, and a busy control lease should be surfaced to the caller. Do not automatically repeat a potentially state-changing input request after an ambiguous failure.
