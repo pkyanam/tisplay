@@ -1,0 +1,96 @@
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: #fff;
+  color: #111;
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  padding: 72px 24px 80px;
+  font: 19px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+main {
+  width: min(100%, 900px);
+  margin: 0 auto;
+}
+
+h1,
+h2,
+p,
+ul,
+pre {
+  margin: 0 0 1.1em;
+  font: inherit;
+}
+
+h1,
+h2 {
+  font-weight: 700;
+}
+
+h1 {
+  margin-bottom: 1.1em;
+}
+
+h1::before {
+  content: "# ";
+  color: #777;
+}
+
+h2 {
+  margin-top: 2.4em;
+  margin-bottom: .8em;
+}
+
+h2::before {
+  content: "## ";
+  color: #777;
+}
+
+pre {
+  overflow-x: auto;
+  padding: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+ul {
+  padding-left: 2em;
+}
+
+li {
+  margin: .35em 0;
+}
+
+a {
+  color: #111;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+:focus-visible {
+  outline: 2px solid #111;
+  outline-offset: 3px;
+}
+
+@media (max-width: 560px) {
+  body {
+    padding: 40px 18px 56px;
+    font-size: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
