@@ -12,13 +12,13 @@ import signal
 import sys
 import time
 import termios
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 
 from PIL import Image, ImageOps
 
 from . import __version__
-from .capture import DesktopError, Screen, VirtualDisplay, make_controller
-from .terminal import Terminal, begin_terminal, render_blocks, render_kitty, terminal_size
+from .capture import DesktopError, Screen, VirtualDisplay, discover_accessible_x11_display, make_controller
+from .terminal import KittyRenderer, Terminal, begin_terminal, render_blocks, terminal_size
 
 KEY_SEQUENCES = {
     b"\x1b[A": "up", b"\x1b[B": "down", b"\x1b[C": "right", b"\x1b[D": "left",
@@ -198,6 +198,37 @@ def process_input(buffer: bytearray, controller: object, screen: Screen, cols: i
     return True
 
 
+@contextmanager
+def startup_display(args: argparse.Namespace):
+    """Select a reachable local X11 display, falling back to private Xvfb."""
+    original_display = os.environ.get("DISPLAY")
+    auto_virtual = False
+    discovered_display = None
+    if sys.platform.startswith("linux") and not args.virtual and not original_display:
+        discovered_display = discover_accessible_x11_display()
+        if discovered_display:
+            os.environ["DISPLAY"] = discovered_display
+        else:
+            auto_virtual = True
+    use_virtual = args.virtual or auto_virtual
+    if use_virtual:
+        missing = [name for name in ("Xvfb", "openbox") if not shutil.which(name)]
+        if not args.command and not shutil.which("xterm"):
+            missing.append("xterm")
+        if missing:
+            raise DesktopError(f"Virtual desktop dependencies missing ({', '.join(missing)}). Install them with: sudo apt install xvfb openbox xterm")
+    context = VirtualDisplay(args.width, args.height) if use_virtual else nullcontext()
+    try:
+        with context as display:
+            yield display, use_virtual
+    finally:
+        if discovered_display:
+            if original_display is None:
+                os.environ.pop("DISPLAY", None)
+            else:
+                os.environ["DISPLAY"] = original_display
+
+
 def run(args: argparse.Namespace) -> int:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise DesktopError("tisplay needs an interactive terminal. Over SSH, connect with `ssh -t host tisplay`.")
@@ -208,65 +239,70 @@ def run(args: argparse.Namespace) -> int:
     else:
         graphics = detect_graphics()
 
-    virtual = VirtualDisplay(args.width, args.height) if args.virtual else nullcontext()
-    with virtual as display:
-        if args.virtual:
+    with startup_display(args) as (display, use_virtual):
+        if use_virtual:
             if args.command:
                 display.launch(args.command)
-            elif shutil.which("xterm"):
+            else:
                 display.launch([shutil.which("xterm"), "-geometry", "100x30+40+40"])
-        screen = Screen(allow_wayland=args.virtual)
+        screen = Screen(allow_wayland=use_virtual)
         controller = make_controller()
+        kitty_renderer = KittyRenderer()
         pending = bytearray()
         escape_since = None
         old_winch = signal.getsignal(signal.SIGWINCH)
         signal.signal(signal.SIGWINCH, lambda *_: None)
         try:
             with Terminal(sys.stdin.fileno()):
-                begin_terminal()
-                if args.graphics == "auto" and graphics == "ansi":
-                    if kitty_probe():
-                        graphics = "kitty"
-                sys.stderr.write("tisplay: q or Ctrl-C quits | keyboard and mouse pass through to the desktop\n")
-                sys.stderr.flush()
-                next_frame = 0.0
-                while True:
-                    now = time.monotonic()
-                    if now >= next_frame:
-                        cols, rows = terminal_size()
-                        frame = screen.frame(args.max_width)
-                        if graphics == "kitty":
-                            frame, content_box = fit_kitty(frame, cols, rows, terminal_pixel_size())
-                            data = render_kitty(frame, cols, rows)
-                        else:
-                            rendered = resize_for_ansi(frame, cols, rows)
-                            rendered_content = ImageOps.contain(frame, (cols, max(2, rows * 2)), Image.Resampling.LANCZOS)
-                            content_box = ((cols - rendered_content.width) / (2 * cols),
-                                           (rows * 2 - rendered_content.height) / (4 * rows),
-                                           rendered_content.width / cols,
-                                           rendered_content.height / (2 * rows))
-                            data = render_blocks(rendered)
-                        os.write(sys.stdout.fileno(), data)
-                        next_frame = now + 1.0 / args.fps
-                    timeout = max(0, min(0.025, next_frame - time.monotonic()))
-                    ready, _, _ = select.select([sys.stdin.fileno()], [], [], timeout)
-                    if ready:
-                        chunk = os.read(sys.stdin.fileno(), 256)
-                        if not chunk:
-                            break
-                        pending.extend(chunk)
-                        if pending == b"\x1b":
-                            escape_since = time.monotonic()
-                        elif pending:
+                try:
+                    begin_terminal()
+                    if args.graphics == "auto" and graphics == "ansi":
+                        if kitty_probe():
+                            graphics = "kitty"
+                    sys.stderr.write("tisplay: q or Ctrl-C quits | keyboard and mouse pass through to the desktop\n")
+                    sys.stderr.flush()
+                    next_frame = 0.0
+                    while True:
+                        now = time.monotonic()
+                        if now >= next_frame:
+                            cols, rows = terminal_size()
+                            frame = screen.frame(args.max_width)
+                            if graphics == "kitty":
+                                frame, content_box = fit_kitty(frame, cols, rows, terminal_pixel_size())
+                                data = kitty_renderer.render(frame, cols, rows)
+                            else:
+                                rendered = resize_for_ansi(frame, cols, rows)
+                                rendered_content = ImageOps.contain(frame, (cols, max(2, rows * 2)), Image.Resampling.LANCZOS)
+                                content_box = ((cols - rendered_content.width) / (2 * cols),
+                                               (rows * 2 - rendered_content.height) / (4 * rows),
+                                               rendered_content.width / cols,
+                                               rendered_content.height / (2 * rows))
+                                data = render_blocks(rendered)
+                            os.write(sys.stdout.fileno(), data)
+                            next_frame = now + 1.0 / args.fps
+                        timeout = max(0, min(0.025, next_frame - time.monotonic()))
+                        ready, _, _ = select.select([sys.stdin.fileno()], [], [], timeout)
+                        if ready:
+                            chunk = os.read(sys.stdin.fileno(), 256)
+                            if not chunk:
+                                break
+                            pending.extend(chunk)
+                            if pending == b"\x1b":
+                                escape_since = time.monotonic()
+                            elif pending:
+                                escape_since = None
+                            while _PENDING_INPUT:
+                                pending.insert(0, _PENDING_INPUT.pop())
+                            if not process_input(pending, controller, screen, *terminal_size(), graphics, content_box):
+                                break
+                        if escape_since is not None and time.monotonic() - escape_since >= 0.15:
+                            if not process_input(pending, controller, screen, *terminal_size(), graphics, content_box, True):
+                                break
                             escape_since = None
-                        while _PENDING_INPUT:
-                            pending.insert(0, _PENDING_INPUT.pop())
-                        if not process_input(pending, controller, screen, *terminal_size(), graphics, content_box):
-                            break
-                    if escape_since is not None and time.monotonic() - escape_since >= 0.15:
-                        if not process_input(pending, controller, screen, *terminal_size(), graphics, content_box, True):
-                            break
-                        escape_since = None
+                finally:
+                    cleanup = kitty_renderer.close()
+                    if cleanup:
+                        os.write(sys.stdout.fileno(), cleanup)
         finally:
             controller.close()
             signal.signal(signal.SIGWINCH, old_winch)

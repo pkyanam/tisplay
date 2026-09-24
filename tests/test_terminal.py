@@ -5,7 +5,7 @@ from PIL import Image
 
 from tisplay import cli
 from tisplay.cli import fit_kitty, process_input, resize_for_ansi
-from tisplay.terminal import render_blocks, render_kitty
+from tisplay.terminal import KittyRenderer, render_blocks, render_kitty
 
 
 class FakeScreen:
@@ -27,11 +27,26 @@ class FakeController:
 def test_kitty_renderer_emits_graphics_protocol_and_png_payload():
     image = Image.new("RGB", (16, 12), "#ff0000")
     rendered = render_kitty(image, 80, 24)
-    assert rendered.startswith(b"\x1b[H\x1b_Ga=d,d=i,i=31")
+    assert rendered.startswith(b"\x1b[H\x1b_Ga=T")
     assert b"a=T,f=24,o=z" in rendered
     encoded = rendered.split(b"m=0;", 1)[1].split(b"\x1b\\", 1)[0]
     payload = zlib.decompress(base64.b64decode(encoded))
     assert payload == bytes((255, 0, 0)) * (16 * 12)
+
+
+def test_kitty_stream_places_new_frame_before_retiring_previous_image():
+    renderer = KittyRenderer(first_image_id=41)
+    first = renderer.render(Image.new("RGB", (2, 2), "red"), 80, 24)
+    second = renderer.render(Image.new("RGB", (2, 2), "blue"), 80, 24)
+
+    assert b"a=T" in first and b"i=41" in first
+    assert b"a=d" not in first
+    new_frame = second.index(b"a=T")
+    retire_old = second.index(b"a=d,d=i,i=41")
+    assert new_frame < retire_old
+    assert b"i=42" in second[new_frame:retire_old]
+    assert b"i=42" in renderer.close()
+    assert renderer.close() == b""
 
 
 def test_ansi_renderer_uses_truecolor_half_blocks():

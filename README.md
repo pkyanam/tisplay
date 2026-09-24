@@ -20,7 +20,7 @@ ssh -t user@computer 'PATH="$HOME/.local/bin:$PATH" tisplay'
 
 The installer puts the command in `~/.local/bin` and installs missing system and Python dependencies. Linux gets X11 input support plus Xvfb, Openbox, and xterm for headless use. On macOS, use a logged-in desktop and grant your terminal or Python **Screen Recording** and **Accessibility** permissions when prompted. `--virtual` is for headless Linux only.
 
-`tisplay` shows an interactive desktop inside a terminal. It captures the primary display, streams each frame through the terminal's normal output (including an SSH PTY), and sends keyboard and mouse input back to the captured machine. Nothing listens on a network port and the video does not rely on a shared filesystem.
+`tisplay` shows an interactive desktop inside a terminal. On Linux, it uses an accessible X11 display; if no display is available, it starts a private virtual desktop automatically. It streams each frame through the terminal's normal output (including an SSH PTY), and sends keyboard and mouse input back to the captured machine. Nothing listens on a network port and the video does not rely on a shared filesystem.
 
 On Kitty Graphics Protocol terminals, including Ghostty-based Cmux, it sends full-color compressed frames inline. Other terminals use a lower-resolution ANSI true-color renderer. `--graphics auto` probes for Kitty support after checking common terminal markers; use `--graphics kitty` to force the sharp path or `--graphics ansi` for maximum compatibility. Kitty graphics preserve the capture's full color; output is capped at 1600 pixels wide by default to keep SSH traffic manageable.
 
@@ -36,16 +36,18 @@ Press `q` or `Ctrl-C` to leave. Keyboard input, clicks, pointer movement, and wh
 
 For Cmux or another Kitty-graphics terminal, the remote side receives the same inline graphics protocol over the SSH session. If auto-detection picks ANSI, try `ssh -t user@computer '~/.local/bin/tisplay --graphics kitty'`. The SSH client terminal must itself support Kitty graphics for full-resolution output; otherwise force ANSI. Mouse reporting must be enabled by the local terminal, as it is in Cmux.
 
+On Linux, an unset `DISPLAY` makes `tisplay` look for a reachable local X11 desktop (using the account's normal X11 authorization). If it cannot access one, it starts Xvfb, Openbox, and xterm automatically. To explicitly select a particular X11 display, set `DISPLAY`, for example `ssh -t user@computer 'DISPLAY=:0 ~/.local/bin/tisplay'`; a configured but inaccessible display reports its error instead of switching desktops.
+
 ## Headless Linux
 
-`--virtual` starts a private Xvfb screen and Openbox, then opens xterm as a usable desktop by default. The installer installs these system dependencies. To launch a different application instead:
+If no X11 desktop is accessible, the default command starts a private Xvfb screen and Openbox, then opens xterm. Use `--virtual` to force this mode even when an X11 display is available. The installer installs these system dependencies. To launch a different application instead:
 
 ```sh
 ssh -t user@server '~/.local/bin/tisplay --virtual -- firefox --no-remote'
 ssh -t user@server '~/.local/bin/tisplay --virtual --width 1600 --height 900 -- xfce4-session'
 ```
 
-The virtual desktop and launched command stop when `tisplay` exits. Linux Wayland capture is not currently supported directly; use an X11 session or `--virtual`. macOS has no virtual-display mode and needs an active logged-in desktop.
+The virtual desktop and launched command stop when `tisplay` exits. Linux Wayland capture is not currently supported directly; `tisplay` does not capture the primary Wayland desktop. Use an accessible X11 session or the virtual desktop. macOS has no virtual-display mode and needs an active logged-in desktop.
 
 ## Options
 

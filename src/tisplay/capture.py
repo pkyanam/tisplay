@@ -61,6 +61,36 @@ class Screen:
         return image
 
 
+def discover_accessible_x11_display() -> str | None:
+    """Find a same-user local X11 display when SSH left DISPLAY unset.
+
+    We rely on normal Xauthority checks when probing local sockets. We never
+    relax X server access control or inspect another user's session credentials.
+    """
+    if os.uname().sysname != "Linux" or os.environ.get("DISPLAY"):
+        return None
+    socket_dir = Path("/tmp/.X11-unix")
+    if not socket_dir.is_dir():
+        return None
+    original_display = os.environ.get("DISPLAY")
+    for socket_path in sorted(socket_dir.glob("X*")):
+        suffix = socket_path.name[1:]
+        if not suffix.isdigit():
+            continue
+        display_name = f":{suffix}"
+        os.environ["DISPLAY"] = display_name
+        try:
+            with mss.MSS():
+                return display_name
+        except Exception:
+            pass
+        finally:
+            if original_display is None:
+                os.environ.pop("DISPLAY", None)
+            else:
+                os.environ["DISPLAY"] = original_display
+    return None
+
 class XTestController:
     """Inject pointer and key events into the current X display via XTest."""
 
