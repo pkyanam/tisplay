@@ -8,6 +8,7 @@ import time
 import pytest
 
 from tisplay.capture import DesktopError, Screen, VirtualDisplay, XTestController
+from tisplay.cli import process_input
 
 
 REQUIRED = ("Xvfb", "xauth", "dbus-run-session", "startxfce4", "xfce4-panel", "xprop", "xwininfo", "xterm", "xdotool")
@@ -56,14 +57,11 @@ def test_virtual_xfce_capture_and_input(tmp_path):
                 break
             time.sleep(0.1)
         assert ready.exists(), "launched application did not reach its input prompt"
+        assert subprocess.run([shutil.which("xdotool"), "getwindowfocus"], capture_output=True, text=True).stdout.strip() == window, "launched application did not retain focus"
         time.sleep(0.2)
         controller = XTestController()
         try:
-            controller.key("t", True)
-            controller.key("t", False)
-            time.sleep(0.1)
-            controller.key("enter", True)
-            controller.key("enter", False)
+            assert process_input(bytearray(b"t\r"), controller, screen, 80, 24)
         finally:
             controller.close()
         for _ in range(30):

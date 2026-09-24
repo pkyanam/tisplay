@@ -22,9 +22,9 @@ The installer puts the command in `~/.local/bin` and installs missing system and
 
 `tisplay` shows an interactive desktop inside a terminal. On Linux, it uses an accessible X11 display; if no display is available, it starts a private virtual desktop automatically. It streams each frame through the terminal's normal output (including an SSH PTY), and sends keyboard and mouse input back to the captured machine. Nothing listens on a network port and the video does not rely on a shared filesystem.
 
-On Kitty Graphics Protocol terminals, including Ghostty-based Cmux, it sends full-color compressed frames inline. Other terminals use a lower-resolution ANSI true-color renderer. `--graphics auto` probes for Kitty support after checking common terminal markers; use `--graphics kitty` to force the sharp path or `--graphics ansi` for maximum compatibility. Kitty graphics preserve the capture's full color; output is capped at 1600 pixels wide by default to keep SSH traffic manageable.
+On Kitty Graphics Protocol terminals, including Ghostty-based Cmux, it sends full-color losslessly compressed frames inline. Other terminals use an ANSI true-color half-block renderer, which samples two vertical pixels per terminal cell. `--graphics auto` probes for Kitty support after checking common terminal markers; use `--graphics kitty` to force the sharp path or `--graphics ansi` for maximum compatibility. The default `balanced` preset targets up to 60 frames per second, uses a 1600×900 virtual desktop when one is launched, and caps Kitty capture at 1600 pixels wide to manage SSH traffic; identical captured frames are not resent. `quality` uses a 1920×1080 virtual desktop when launched, preserves source resolution, and uses stronger lossless compression. `fast` uses a 1280×800 virtual desktop when launched, caps capture at 960 pixels wide, and targets 30 fps. Presets set starting values; explicit `--fps`, `--max-width`, `--width`, and `--height` options override them. Compression level affects CPU use and bandwidth only, not image fidelity.
 
-To check the terminal's graphics output without opening an X11 session or reading the desktop, run `tisplay --test-pattern`. It displays four color fields with a `TISPLAY TEST` label through the same renderer and quits with `q` or `Ctrl-C`.
+To check the terminal's graphics output without opening an X11 session or reading the desktop, run `tisplay --test-pattern`. It displays four color fields with a `TISPLAY TEST` label through the same renderer and quits with `Ctrl-]`.
 
 ## Use locally
 
@@ -32,11 +32,13 @@ To check the terminal's graphics output without opening an X11 session or readin
 tisplay
 ```
 
-Press `q` or `Ctrl-C` to leave. Keyboard input, clicks, pointer movement, and wheel scrolling are forwarded to the desktop. In macOS, allow the Python executable or terminal app under **System Settings → Privacy & Security → Screen Recording** and **Accessibility** if macOS prompts; restart `tisplay` after granting access.
+Press `Ctrl-]` to leave. Keyboard input, clicks, pointer movement, and wheel scrolling are forwarded to the desktop; `Ctrl-C` is sent to the desktop as a key chord. In macOS, allow the Python executable or terminal app under **System Settings → Privacy & Security → Screen Recording** and **Accessibility** if macOS prompts; restart `tisplay` after granting access.
 
 ## Use over SSH
 
-For Cmux or another Kitty-graphics terminal, the remote side receives the same inline graphics protocol over the SSH session. If auto-detection picks ANSI, try `ssh -t user@computer '~/.local/bin/tisplay --graphics kitty'`. The SSH client terminal must itself support Kitty graphics for full-resolution output; otherwise force ANSI. Mouse reporting must be enabled by the local terminal, as it is in Cmux.
+For Cmux or another Kitty-graphics terminal, the remote side receives the same inline graphics protocol over the SSH session. For the sharpest stream, use `ssh -t user@computer '~/.local/bin/tisplay --preset quality'`. If auto-detection picks ANSI, try `ssh -t user@computer '~/.local/bin/tisplay --graphics kitty'`. The SSH client terminal must itself support Kitty graphics for full-resolution output; otherwise force ANSI. Mouse reporting must be enabled by the local terminal, as it is in Cmux.
+
+`--fps 60` is a refresh target, not a guarantee: capture speed, desktop motion, compression work, terminal redraw time, SSH bandwidth, and the receiving terminal all limit the delivered rate. Frames do not queue behind slow output, so input remains responsive and the stream resumes at the pace the machine can sustain. The ANSI fallback cannot provide pixel graphics or crisp source-resolution detail; it is restricted to the terminal's character-cell grid. A smaller terminal font can show more samples, but Kitty graphics are needed for detailed images.
 
 On Linux, an unset `DISPLAY` makes `tisplay` look for a reachable local X11 desktop (using the account's normal X11 authorization). If it cannot access one, it starts Xvfb, Openbox, and xterm automatically. To explicitly select a particular X11 display, set `DISPLAY`, for example `ssh -t user@computer 'DISPLAY=:0 ~/.local/bin/tisplay'`; a configured but inaccessible display reports its error instead of switching desktops.
 
@@ -55,11 +57,12 @@ The virtual desktop and launched command stop when `tisplay` exits. The headless
 
 ```text
 --graphics auto|kitty|ansi   renderer selection (default auto)
---fps N                     refresh cap, 1 to 60 (default 12)
---max-width PX              capture width cap (default 1600)
+--preset quality|balanced|fast performance and resolution defaults (default balanced)
+--fps N                     refresh target, 1 to 60 (default comes from preset; balanced: 60)
+--max-width PX              maximum capture width (balanced: 1600, fast: 960, quality: uncapped)
 --virtual                   force a full Xfce desktop on Xvfb on Linux
 --test-pattern              show synthetic color fields without desktop access
---width PX --height PX      virtual desktop size (default 1280x800)
+--width PX --height PX      virtual desktop size (default comes from preset; balanced: 1600x900)
 ```
 
 ## Development

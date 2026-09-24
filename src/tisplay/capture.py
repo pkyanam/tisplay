@@ -54,13 +54,13 @@ class Screen:
                 raise
             raise DesktopError(f"Cannot open the display ({exc}). On Linux, use an X11 display or --virtual.") from exc
 
-    def frame(self, max_width: int = 1920) -> Image.Image:
+    def frame(self, max_width: int | None = 1920) -> Image.Image:
         try:
             shot = self.grabber.grab(self.monitor)
         except Exception as exc:
             raise DesktopError(f"Screen capture failed: {exc}") from exc
         image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-        if image.width > max_width:
+        if max_width is not None and image.width > max_width:
             height = max(1, round(image.height * max_width / image.width))
             image = image.resize((max_width, height), Image.Resampling.LANCZOS)
         return image

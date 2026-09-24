@@ -27,6 +27,26 @@ KEY_SEQUENCES = {
     b"\x1b[3~": "delete", b"\x1b[Z": "tab",
 }
 
+PRESETS = {
+    # All Kitty zlib levels are lossless.  Higher compression reduces bytes
+    # at a CPU cost; it does not improve visual quality.
+    "quality": {"fps": 60.0, "max_width": None, "compression_level": 6, "width": 1920, "height": 1080},
+    "balanced": {"fps": 60.0, "max_width": 1600, "compression_level": 1, "width": 1600, "height": 900},
+    "fast": {"fps": 30.0, "max_width": 960, "compression_level": 1, "width": 1280, "height": 800},
+}
+
+
+def resolve_performance(preset: str, fps: float | None, max_width: int | None,
+                        width: int | None = None, height: int | None = None
+                        ) -> tuple[float, int | None, int, int, int]:
+    """Resolve preset defaults while letting explicit CLI values take precedence."""
+    defaults = PRESETS[preset]
+    return (fps if fps is not None else defaults["fps"],
+            max_width if max_width is not None else defaults["max_width"],
+            defaults["compression_level"],
+            width if width is not None else defaults["width"],
+            height if height is not None else defaults["height"])
+
 
 def detect_graphics() -> str:
     term = os.environ.get("TERM", "").lower()
@@ -74,11 +94,18 @@ _PENDING_INPUT = bytearray()
 
 
 def resize_for_ansi(frame: Image.Image, cols: int, rows: int) -> Image.Image:
+    return fit_ansi(frame, cols, rows)[0]
+
+
+def fit_ansi(frame: Image.Image, cols: int, rows: int) -> tuple[Image.Image, tuple[float, float, float, float]]:
+    """Resize once for the ANSI cell grid and return its desktop mapping."""
     size = (cols, max(2, rows * 2))
     content = ImageOps.contain(frame, size, Image.Resampling.LANCZOS)
     canvas = Image.new("RGB", size, "black")
-    canvas.paste(content, ((size[0] - content.width) // 2, (size[1] - content.height) // 2))
-    return canvas
+    left, top = (size[0] - content.width) // 2, (size[1] - content.height) // 2
+    canvas.paste(content, (left, top))
+    box = (left / cols, top / (2 * rows), content.width / cols, content.height / (2 * rows))
+    return canvas, box
 
 
 def fit_kitty(frame: Image.Image, cols: int, rows: int, pixel_size: tuple[int, int] | None) -> tuple[Image.Image, tuple[float, float, float, float]]:
@@ -89,6 +116,8 @@ def fit_kitty(frame: Image.Image, cols: int, rows: int, pixel_size: tuple[int, i
         aspect = cols / max(1, rows * 2)
     width = frame.width
     height = max(1, round(width / aspect))
+    if height == frame.height:
+        return frame, (0.0, 0.0, 1.0, 1.0)
     canvas = Image.new("RGB", (width, height), "black")
     content = ImageOps.contain(frame, canvas.size, Image.Resampling.LANCZOS)
     left, top = (width - content.width) // 2, (height - content.height) // 2
@@ -111,7 +140,7 @@ class TestPatternScreen:
     def __init__(self, width: int = 1024, height: int = 768) -> None:
         self.monitor = {"left": 0, "top": 0, "width": width, "height": height}
 
-    def frame(self, max_width: int = 1920) -> Image.Image:
+    def frame(self, max_width: int | None = 1920) -> Image.Image:
         width, height = self.monitor["width"], self.monitor["height"]
         image = Image.new("RGB", (width, height), "black")
         draw = ImageDraw.Draw(image)
@@ -125,7 +154,7 @@ class TestPatternScreen:
             draw.rectangle(box, fill=color)
         draw.rectangle((width // 4, height // 2 - 28, 3 * width // 4, height // 2 + 28), fill=(0, 0, 0))
         draw.text((width // 2 - 68, height // 2 - 8), "TISPLAY TEST", fill=(255, 255, 255))
-        if width > max_width:
+        if max_width is not None and width > max_width:
             image = image.resize((max_width, max(1, round(height * max_width / width))), Image.Resampling.LANCZOS)
         return image
 
@@ -146,6 +175,39 @@ def _csi_final(data: bytes) -> int | None:
         if 0x40 <= data[i] <= 0x7e:
             return i
     return None
+
+
+def _protocol_key(seq: bytes) -> tuple[str, bool] | None:
+    """Decode Kitty CSI-u and xterm modifyOtherKeys key presses/releases."""
+    if not (seq.startswith(b"\x1b[") and len(seq) >= 3):
+        return None
+    final = seq[-1:]
+    params = seq[2:-1].split(b";")
+    try:
+        if final == b"u":  # Kitty keyboard protocol: CSI unicode-key[:shifted];mods:event u
+            keycode = int(params[0].split(b":", 1)[0])
+            modifier_event = params[1].split(b":", 1) if len(params) > 1 else [b"1"]
+            event = int(modifier_event[1]) if len(modifier_event) > 1 else 1
+            down = event != 3
+        elif final == b"~" and len(params) >= 3 and params[0] == b"27":
+            # xterm modifyOtherKeys: CSI 27;modifier;unicode-key~
+            keycode = int(params[2])
+            down = True
+        else:
+            return None
+    except ValueError:
+        return None
+
+    names = {
+        9: "tab", 13: "enter", 27: "escape", 127: "backspace",
+        57345: "enter", 57414: "enter",
+    }
+    name = names.get(keycode)
+    if name is None and 32 <= keycode < 127:
+        name = chr(keycode)
+    if name is None:
+        return None
+    return name, down
 
 
 def process_input(buffer: bytearray, controller: object, screen: Screen, cols: int, rows: int,
@@ -172,6 +234,15 @@ def process_input(buffer: bytearray, controller: object, screen: Screen, cols: i
                 return True
             seq = bytes(buffer[:end + 1])
             del buffer[:end + 1]
+            protocol_key = _protocol_key(seq)
+            if protocol_key:
+                name, down = protocol_key
+                controller.key(name, down)
+                if down:
+                    # Most desktops need a complete key press when the
+                    # terminal reports only Kitty's default press event.
+                    controller.key(name, False)
+                continue
             if seq.startswith(b"\x1b[<"):
                 try:
                     code, x, y = map(int, seq[3:-1].split(b";"))
@@ -208,19 +279,17 @@ def process_input(buffer: bytearray, controller: object, screen: Screen, cols: i
             continue
         value = buffer[0]
         del buffer[0]
-        if value in (ord("q"), 0x03):
+        if value == 0x1d:
             return False
-        if value == 0x1b:
-            return False
-        if 1 <= value <= 26:
+        if value in (10, 13):
+            controller.key("enter", True)
+            controller.key("enter", False)
+        elif 1 <= value <= 26:
             name = chr(value + 96)
             controller.key("ctrl", True)
             controller.key(name, True)
             controller.key(name, False)
             controller.key("ctrl", False)
-        elif value in (10, 13):
-            controller.key("enter", True)
-            controller.key("enter", False)
         elif value == 9:
             controller.key("tab", True)
             controller.key("tab", False)
@@ -283,7 +352,8 @@ def run(args: argparse.Namespace) -> int:
         test_pattern = getattr(args, "test_pattern", False)
         screen = TestPatternScreen(args.width, args.height) if test_pattern else Screen(allow_wayland=use_virtual)
         controller = NoopController() if test_pattern else make_controller()
-        kitty_renderer = KittyRenderer()
+        fps, max_width, compression_level, _, _ = resolve_performance(args.preset, args.fps, args.max_width, args.width, args.height)
+        kitty_renderer = KittyRenderer(compression_level=compression_level)
         pending = bytearray()
         escape_since = None
         old_winch = signal.getsignal(signal.SIGWINCH)
@@ -295,7 +365,7 @@ def run(args: argparse.Namespace) -> int:
                     if args.graphics == "auto" and graphics == "ansi":
                         if kitty_probe():
                             graphics = "kitty"
-                    sys.stderr.write("tisplay: q or Ctrl-C quits | keyboard and mouse pass through to the desktop\n")
+                    sys.stderr.write("tisplay: Ctrl-] quits | keyboard and mouse pass through to the desktop\n")
                     sys.stderr.flush()
                     next_frame = 0.0
                     while True:
@@ -304,20 +374,16 @@ def run(args: argparse.Namespace) -> int:
                             display.check_command()
                         if now >= next_frame:
                             cols, rows = terminal_size()
-                            frame = screen.frame(args.max_width)
+                            frame = screen.frame(max_width)
                             if graphics == "kitty":
                                 frame, content_box = fit_kitty(frame, cols, rows, terminal_pixel_size())
                                 data = kitty_renderer.render(frame, cols, rows)
                             else:
-                                rendered = resize_for_ansi(frame, cols, rows)
-                                rendered_content = ImageOps.contain(frame, (cols, max(2, rows * 2)), Image.Resampling.LANCZOS)
-                                content_box = ((cols - rendered_content.width) / (2 * cols),
-                                               (rows * 2 - rendered_content.height) / (4 * rows),
-                                               rendered_content.width / cols,
-                                               rendered_content.height / (2 * rows))
+                                rendered, content_box = fit_ansi(frame, cols, rows)
                                 data = render_blocks(rendered)
-                            os.write(sys.stdout.fileno(), data)
-                            next_frame = now + 1.0 / args.fps
+                            if data:
+                                os.write(sys.stdout.fileno(), data)
+                            next_frame = now + 1.0 / fps
                         timeout = max(0, min(0.025, next_frame - time.monotonic()))
                         ready, _, _ = select.select([sys.stdin.fileno()], [], [], timeout)
                         if ready:
@@ -351,18 +417,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="tisplay", description="Interactive desktop stream in a terminal or over SSH.")
     parser.add_argument("--version", action="version", version=f"tisplay {__version__}")
     parser.add_argument("--graphics", choices=("auto", "kitty", "ansi"), default="auto", help="auto-detect Kitty graphics, or force a renderer")
-    parser.add_argument("--fps", type=float, default=12, help="maximum refresh rate (default: 12)")
-    parser.add_argument("--max-width", type=int, default=1600, help="maximum captured image width (default: 1600)")
+    parser.add_argument("--preset", choices=tuple(PRESETS), default="balanced", help="quality keeps source resolution, balanced targets 60 fps, fast reduces capture and bandwidth (default: balanced)")
+    parser.add_argument("--fps", type=float, default=None, help="refresh target (default comes from --preset; up to 60)")
+    parser.add_argument("--max-width", type=int, default=None, help="capture width cap in pixels (default comes from --preset; quality has no cap)")
     parser.add_argument("--virtual", action="store_true", help="force a private Xfce desktop on Xvfb on Linux")
     parser.add_argument("--test-pattern", action="store_true", help="stream synthetic color bars without opening a desktop or injecting input")
-    parser.add_argument("--width", type=int, default=1280, help="virtual display width (default: 1280)")
-    parser.add_argument("--height", type=int, default=800, help="virtual display height (default: 800)")
+    parser.add_argument("--width", type=int, default=None, help="virtual display width (default comes from --preset)")
+    parser.add_argument("--height", type=int, default=None, help="virtual display height (default comes from --preset)")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="optional command to launch inside the virtual desktop (after --)")
     args = parser.parse_args()
     args.command = args.command[1:] if args.command and args.command[0] == "--" else args.command
-    if args.fps <= 0 or args.fps > 60:
+    args.fps, args.max_width, _, args.width, args.height = resolve_performance(
+        args.preset, args.fps, args.max_width, args.width, args.height)
+    if args.fps is not None and (args.fps <= 0 or args.fps > 60):
         parser.error("--fps must be greater than 0 and at most 60")
-    if args.max_width < 160 or args.width < 320 or args.height < 240:
+    if (args.max_width is not None and args.max_width < 160) or args.width < 320 or args.height < 240:
         parser.error("capture and virtual display dimensions are too small")
     try:
         raise SystemExit(run(args))

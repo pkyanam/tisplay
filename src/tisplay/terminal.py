@@ -44,11 +44,12 @@ def terminal_size() -> tuple[int, int]:
     return max(1, size.columns), max(1, size.lines)
 
 
-def _encode_kitty(image: Image.Image, cols: int, rows: int, image_id: int) -> bytes:
+def _encode_kitty(image: Image.Image, cols: int, rows: int, image_id: int,
+                  raw_rgb: bytes | None = None, compression_level: int = 1) -> bytes:
     """Encode one full-color frame using an explicit Kitty image ID."""
     image = image.convert("RGB")
     width, height = image.size
-    encoded = base64.b64encode(zlib.compress(image.tobytes(), level=1))
+    encoded = base64.b64encode(zlib.compress(raw_rgb if raw_rgb is not None else image.tobytes(), level=compression_level))
     chunks = [encoded[i:i + 4096] for i in range(0, len(encoded), 4096)]
     pieces = [b"\x1b[H"]
     for index, chunk in enumerate(chunks):
@@ -64,20 +65,28 @@ def _encode_kitty(image: Image.Image, cols: int, rows: int, image_id: int) -> by
 class KittyRenderer:
     """Keep Kitty frames visible while replacing them over an in-band stream."""
 
-    def __init__(self, first_image_id: int | None = None):
+    def __init__(self, first_image_id: int | None = None, compression_level: int = 1):
         # IDs are terminal-session global, so avoid a fixed ID that could
         # collide with another application sharing the terminal.
         self._next_id = first_image_id or (secrets.randbelow(0xFFFFFFFF) + 1)
         self._current_id: int | None = None
+        self._compression_level = compression_level
+        self._last_frame: tuple[tuple[int, int], int, int, bytes] | None = None
 
     def render(self, image: Image.Image, cols: int, rows: int) -> bytes:
         """Display the new frame, then delete the previous frame's image."""
+        image = image.convert("RGB")
+        raw_rgb = image.tobytes()
+        signature = (image.size, cols, rows, raw_rgb)
+        if signature == self._last_frame:
+            return b""
         image_id = self._next_id
         self._next_id = 1 if image_id == 0xFFFFFFFF else image_id + 1
-        output = bytearray(_encode_kitty(image, cols, rows, image_id))
+        output = bytearray(_encode_kitty(image, cols, rows, image_id, raw_rgb, self._compression_level))
         if self._current_id is not None:
             output.extend(self._delete(self._current_id))
         self._current_id = image_id
+        self._last_frame = signature
         return bytes(output)
 
     def close(self) -> bytes:
@@ -86,6 +95,7 @@ class KittyRenderer:
             return b""
         output = self._delete(self._current_id)
         self._current_id = None
+        self._last_frame = None
         return output
 
     @staticmethod

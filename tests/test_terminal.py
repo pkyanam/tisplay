@@ -116,5 +116,7 @@ def test_input_forwards_keys_click_and_pointer_motion():
     assert controller.buttons[-1][1] is False
 
 
-def test_q_requests_exit():
-    assert not process_input(bytearray(b"q"), FakeController(), FakeScreen(), 80, 24)
+def test_q_is_forwarded_as_a_character():
+    controller = FakeController()
+    assert process_input(bytearray(b"q"), controller, FakeScreen(), 80, 24)
+    assert controller.keys == [("q", True), ("q", False)]
