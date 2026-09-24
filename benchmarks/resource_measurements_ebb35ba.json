@@ -1,0 +1,84 @@
+{
+  "python": "3.14.6",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "pillow": "12.3.0",
+  "frame": "1600x900 desktop-like",
+  "renders_per_process": 4,
+  "repeats": 5,
+  "results": {
+    "baseline": {
+      "median_ms": 20.254625007510185,
+      "median_peak_rss_bytes": 90226688,
+      "mean_payload_bytes": 1380459,
+      "runs": [
+        {
+          "median_ms": 19.643875071778893,
+          "mean_ms": 19.794885243754834,
+          "mean_payload_bytes": 1380459,
+          "peak_rss_bytes": 90292224
+        },
+        {
+          "median_ms": 20.897603943012655,
+          "mean_ms": 20.81563527463004,
+          "mean_payload_bytes": 1380459,
+          "peak_rss_bytes": 90112000
+        },
+        {
+          "median_ms": 20.63029201235622,
+          "mean_ms": 20.903927215840667,
+          "mean_payload_bytes": 1380459,
+          "peak_rss_bytes": 90177536
+        },
+        {
+          "median_ms": 20.1357085024938,
+          "mean_ms": 20.290156244300306,
+          "mean_payload_bytes": 1380459,
+          "peak_rss_bytes": 90226688
+        },
+        {
+          "median_ms": 20.254625007510185,
+          "mean_ms": 20.339166512712836,
+          "mean_payload_bytes": 1380459,
+          "peak_rss_bytes": 90341376
+        }
+      ]
+    },
+    "current": {
+      "median_ms": 20.212353905662894,
+      "median_peak_rss_bytes": 85508096,
+      "mean_payload_bytes": 1380459,
+      "runs": [
+        {
+          "median_ms": 19.995021051727235,
+          "mean_ms": 19.88217735197395,
+          "mean_payload_bytes": 1380459,
+          "peak_rss_bytes": 85491712
+        },
+        {
+          "median_ms": 20.484041539020836,
+          "mean_ms": 20.468531001824886,
+          "mean_payload_bytes": 1380459,
+          "peak_rss_bytes": 85688320
+        },
+        {
+          "median_ms": 20.212353905662894,
+          "mean_ms": 20.211218507029116,
+          "mean_payload_bytes": 1380459,
+          "peak_rss_bytes": 85409792
+        },
+        {
+          "median_ms": 20.492812036536634,
+          "mean_ms": 20.442124747205526,
+          "mean_payload_bytes": 1380459,
+          "peak_rss_bytes": 85508096
+        },
+        {
+          "median_ms": 20.16964612994343,
+          "mean_ms": 20.240260288119316,
+          "mean_payload_bytes": 1380459,
+          "peak_rss_bytes": 85573632
+        }
+      ]
+    }
+  }
+}
