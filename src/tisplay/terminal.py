@@ -47,19 +47,26 @@ def terminal_size() -> tuple[int, int]:
 def _encode_kitty(image: Image.Image, cols: int, rows: int, image_id: int,
                   raw_rgb: bytes | None = None, compression_level: int = 1) -> bytes:
     """Encode one full-color frame using an explicit Kitty image ID."""
-    image = image.convert("RGB")
+    if image.mode != "RGB":
+        image = image.convert("RGB")
     width, height = image.size
     encoded = base64.b64encode(zlib.compress(raw_rgb if raw_rgb is not None else image.tobytes(), level=compression_level))
-    chunks = [encoded[i:i + 4096] for i in range(0, len(encoded), 4096)]
-    pieces = [b"\x1b[H"]
-    for index, chunk in enumerate(chunks):
-        more = 1 if index < len(chunks) - 1 else 0
+    # Append chunks directly to the output. Keeping a list of 4 KiB slices and
+    # then joining it duplicates the encoded payload and creates hundreds of
+    # short-lived bytes objects for every moving frame.
+    chunk_count = (len(encoded) + 4095) // 4096
+    output = bytearray(b"\x1b[H")
+    view = memoryview(encoded)
+    for index, start in enumerate(range(0, len(encoded), 4096)):
+        more = 1 if index < chunk_count - 1 else 0
         if index == 0:
             header = f"\x1b_Ga=T,f=24,o=z,q=2,i={image_id},s={width},v={height},c={cols},r={rows},C=1,m={more};".encode()
         else:
             header = f"\x1b_Gm={more};".encode()
-        pieces.extend((header, chunk, b"\x1b\\"))
-    return b"".join(pieces)
+        output.extend(header)
+        output.extend(view[start:start + 4096])
+        output.extend(b"\x1b\\")
+    return bytes(output)
 
 
 class KittyRenderer:
