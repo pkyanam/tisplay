@@ -1,8 +1,8 @@
-"""Native Wayland desktop capture and input helpers.
+"""Native Wayland capture/input, with an isolated labwc session when requested.
 
-The provider attaches to the caller's existing compositor. It never launches,
-stops, or reconfigures a compositor. Capture uses grim; input is sent through a
-short-lived WayVNC server bound only to a private Unix-domain socket.
+Capture uses grim; input is sent through a short-lived WayVNC server bound only
+to a private Unix-domain socket. A managed labwc session uses its own runtime
+and process group and never stops or reconfigures another compositor.
 """
 from __future__ import annotations
 
@@ -360,7 +360,12 @@ class NativeDisplay:
                     if mount.exists():
                         tool = shutil.which("fusermount3") or shutil.which("fusermount")
                         if tool:
-                            subprocess.run([tool, "-u", str(mount)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+                            try:
+                                subprocess.run([tool, "-u", str(mount)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+                            except (OSError, subprocess.TimeoutExpired):
+                                # Preserve the runtime if a mount remains;
+                                # cleanup checks mountinfo before recursing.
+                                pass
         self.process = None
         if self._log:
             self._log.close(); self._log = None
@@ -377,7 +382,9 @@ class NativeDisplay:
             monitor = next((o for o in outputs if o["name"] == self.monitor["name"]), None)
             if not monitor: raise DesktopError(f"selected Wayland output disappeared: {self.monitor['name']}")
             self.outputs, self.monitor = outputs, monitor
-            result = subprocess.run([shutil.which("grim") or "grim", "-o", monitor["name"], "-t", "png", "-"], capture_output=True, timeout=10, env=self.environment)
+            # PPM avoids grim's CPU-heavy PNG compression. The daemon encodes
+            # the final protocol frame as PNG after scaling/cropping.
+            result = subprocess.run([shutil.which("grim") or "grim", "-o", monitor["name"], "-t", "ppm", "-"], capture_output=True, timeout=10, env=self.environment)
             if result.returncode:
                 raise DesktopError(f"grim capture failed: {result.stderr.decode(errors='replace').strip()}")
             from io import BytesIO
@@ -513,16 +520,13 @@ class NativeWaylandController:
         target = info["environment"].get("TISPLAY_WAYLAND_OUTPUT")
         self.monitor = next((o for o in info["outputs"] if o["name"] == target), None)
         if self.monitor is None:
-            self.monitor = _select_output(info["outputs"], info["headless"])
-        self.button_mask = 0
+            self.monitor = _select_output(info["outputs"], bool(target and target.startswith("NOOP-")))
         self._log = tempfile.TemporaryFile(mode="w+b")
         config = Path(self._tmp.name) / "wayvnc.conf"
         config.write_text("", encoding="utf-8")
         config.chmod(0o600)
         self.button_mask = 0
-        level = os.environ.get("TISPLAY_WAYVNC_LOG_LEVEL", "error").lower()
-        if level not in {"error", "warning", "info", "debug", "trace", "quiet"}: level = "error"
-        command = [shutil.which("wayvnc") or "wayvnc", "--config", str(config), "--log-level", level,
+        command = [shutil.which("wayvnc") or "wayvnc", "--config", str(config), "--log-level", "error",
                    "--output", self.monitor["name"], "--disable-resizing", "--unix-socket",
                    "--socket", str(Path(self._tmp.name) / "control.sock"), self._socket_path]
         try:

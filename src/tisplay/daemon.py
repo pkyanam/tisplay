@@ -308,7 +308,9 @@ class Engine:
         frame_id = hashlib.sha256(geom.encode()).hexdigest()[:20]
         s.frame_id = frame_id
         from io import BytesIO
-        buf = BytesIO(); image.save(buf, format="PNG", optimize=False)
+        # Agent captures favor low CPU latency on small ARM hosts; level 1
+        # keeps the payload compact while avoiding the much slower default.
+        buf = BytesIO(); image.save(buf, format="PNG", optimize=False, compress_level=1)
         png = buf.getvalue()
         meta = {"frame_id": frame_id, "content_id": hashlib.sha256(png).hexdigest()[:20], "timestamp": time.time(), "width": image.width, "height": image.height,
                 "display_width": display_width, "display_height": display_height,
