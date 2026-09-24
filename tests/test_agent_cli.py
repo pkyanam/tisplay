@@ -163,7 +163,46 @@ def test_attach_controller_batches_input_and_releases_held_keys():
     }
 
     controller.close()
-    assert calls[-1][1] == [{"type": "key_up", "name": "ctrl"}]
+    assert calls[-1][1] == [{"type": "key_up", "name": ["ctrl"]}]
+
+
+def test_attach_literal_space_plus_and_ctrl_key_reach_engine(monkeypatch):
+    from tisplay.daemon import Engine, Session
+
+    engine = Engine()
+    session = Session("attach-keys", 800, 600)
+    events = []
+
+    class RecordingController:
+        def key(self, key, down): events.append((key, down))
+        def close(self): pass
+
+    monkeypatch.setattr("tisplay.daemon.make_controller", RecordingController)
+    owner = "attach-operator"
+    engine.control(session, {"action": "acquire", "owner": owner})
+
+    class EngineClient:
+        def input(self, session_id, actions, **kwargs):
+            assert session_id == session.id
+            return engine.input(session, {"actions": actions, **kwargs})
+
+    bridge = agent_cli._AttachController(EngineClient(), session.id)
+    bridge.owner = owner
+
+    class Screen:
+        monitor = {"left": 0, "top": 0, "width": 800, "height": 600}
+
+    assert cli.process_input(bytearray(b" +\r\x03"), bridge, Screen(), 80, 24)
+    bridge.flush()
+    assert events == [
+        (" ", True), (" ", False),
+        ("+", True), ("+", False),
+        ("enter", True), ("enter", False),
+        ("ctrl", True), ("c", True), ("c", False), ("ctrl", False),
+    ]
+    bridge.key("+", True)
+    bridge.close()
+    assert events[-2:] == [("+", True), ("+", False)]
 
 
 def test_view_only_attach_controller_never_queues_input():

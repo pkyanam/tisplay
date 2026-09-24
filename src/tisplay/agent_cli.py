@@ -437,7 +437,10 @@ class _AttachController:
 
     def key(self, key: str, down: bool) -> None:
         if self.readonly: return
-        self._actions.append({"type": "key_down" if down else "key_up", "name": key})
+        # Send one key per action. The daemon accepts a string as a chord
+        # shorthand ("ctrl+l"), so a literal space or plus in a string would
+        # otherwise be stripped or split into an empty chord.
+        self._actions.append({"type": "key_down" if down else "key_up", "name": [key]})
         if down: self._held_keys.add(key)
         else: self._held_keys.discard(key)
 
@@ -478,7 +481,7 @@ class _AttachController:
 
     def close(self) -> None:
         if self._held_keys:
-            self._actions.extend({"type": "key_up", "name": key} for key in sorted(self._held_keys))
+            self._actions.extend({"type": "key_up", "name": [key]} for key in sorted(self._held_keys))
             self._held_keys.clear()
         self.flush()
 
