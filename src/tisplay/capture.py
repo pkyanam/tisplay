@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import shutil
+import secrets
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -191,50 +193,133 @@ class VirtualDisplay:
     width: int = 1280
     height: int = 800
     process: subprocess.Popen | None = None
-    wm: subprocess.Popen | None = None
+    session: subprocess.Popen | None = None
     command: subprocess.Popen | None = None
     old_display: str | None = None
+    old_xauthority: str | None = None
+    _auth_dir: str | None = None
+    _logs: dict[str, object] | None = None
 
     def __enter__(self) -> "VirtualDisplay":
         if os.uname().sysname != "Linux":
             raise DesktopError("--virtual is supported on Linux with Xvfb. macOS cannot create a headless virtual desktop.")
+        missing = [name for name in ("Xvfb", "xauth", "dbus-run-session", "startxfce4", "xfce4-panel", "xprop", "pgrep") if not shutil.which(name)]
+        if missing:
+            raise DesktopError(f"Full virtual desktop dependencies missing ({', '.join(missing)}). Install tisplay's Linux dependencies, including Xfce and D-Bus.")
         xvfb = shutil.which("Xvfb")
-        if not xvfb:
-            raise DesktopError("Xvfb is required for --virtual. Install it with: sudo apt install xvfb")
         self.old_display = os.environ.get("DISPLAY")
         existing = {int(p.name[1:]) for p in Path("/tmp/.X11-unix").glob("X*") if p.name[1:].isdigit()} if Path("/tmp/.X11-unix").exists() else set()
         display_no = next((n for n in range(90, 120) if n not in existing), None)
         if display_no is None:
             raise DesktopError("No free X display number in the range :90-:119.")
         display_name = f":{display_no}"
+        self.old_xauthority = os.environ.get("XAUTHORITY")
+        self._auth_dir = tempfile.mkdtemp(prefix="tisplay-xauth-")
+        auth_file = os.path.join(self._auth_dir, "Xauthority")
+        cookie = secrets.token_hex(16)
+        auth_add = subprocess.run([shutil.which("xauth"), "-f", auth_file, "add", display_name, ".", cookie], capture_output=True, text=True)
+        if auth_add.returncode:
+            shutil.rmtree(self._auth_dir, ignore_errors=True)
+            raise DesktopError(f"Could not create X11 authorization for the virtual display: {auth_add.stderr.strip()}")
+        os.environ["XAUTHORITY"] = auth_file
+        self._logs = {
+            "Xvfb": tempfile.TemporaryFile(mode="w+t"),
+            "Xfce": tempfile.TemporaryFile(mode="w+t"),
+            "application": tempfile.TemporaryFile(mode="w+t"),
+        }
         try:
-            self.process = subprocess.Popen([xvfb, display_name, "-screen", "0", f"{self.width}x{self.height}x24", "-nolisten", "tcp"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.process = subprocess.Popen([xvfb, display_name, "-screen", "0", f"{self.width}x{self.height}x24", "-nolisten", "tcp", "-auth", auth_file], env=os.environ.copy(), stdout=self._logs["Xvfb"], stderr=subprocess.STDOUT)
             os.environ["DISPLAY"] = display_name
-            for _ in range(50):
+            for _ in range(100):
                 if self.process.poll() is not None:
-                    raise DesktopError("Xvfb exited while starting the virtual display.")
+                    raise self._startup_error("Xvfb exited while starting the virtual display.")
                 try:
                     with mss.MSS():
                         break
                 except Exception:
                     time.sleep(0.1)
             else:
-                raise DesktopError("Xvfb started but the display did not become ready.")
-            openbox = shutil.which("openbox")
-            if openbox:
-                self.wm = subprocess.Popen([openbox], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                raise self._startup_error("Xvfb did not become ready within 10 seconds.")
+            self.session = subprocess.Popen([shutil.which("dbus-run-session"), "--", shutil.which("startxfce4")], env=os.environ.copy(), stdout=self._logs["Xfce"], stderr=subprocess.STDOUT)
+            deadline = time.monotonic() + 25
+            ready = False
+            while time.monotonic() < deadline:
+                if self.session.poll() is not None:
+                    raise self._startup_error("Xfce exited while starting the headless desktop.")
+                try:
+                    wm = subprocess.run([shutil.which("xprop"), "-root", "_NET_SUPPORTING_WM_CHECK"], capture_output=True, text=True, timeout=1)
+                    panel = subprocess.run([shutil.which("pgrep"), "-u", str(os.getuid()), "-x", "xfce4-panel"], capture_output=True, text=True, timeout=1)
+                    panel_running = any(self._process_state(pid) not in (None, "Z") for pid in panel.stdout.split())
+                    if wm.returncode == 0 and "window id" in wm.stdout.lower() and panel_running:
+                        ready = True
+                        break
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
                 time.sleep(0.2)
-            return self
+            if not ready:
+                raise self._startup_error("Xfce did not finish starting (window manager and panel were not ready within 25 seconds).")
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if self._has_visible_desktop():
+                    return self
+                if self.session.poll() is not None:
+                    raise self._startup_error("Xfce exited before its desktop produced a visible frame.")
+                time.sleep(0.2)
+            raise self._startup_error("Xfce started its window manager and panel, but the virtual screen remained blank for 10 seconds.")
         except Exception:
             self.__exit__(None, None, None)
             raise
 
     def launch(self, argv: list[str]) -> None:
         if argv:
-            self.command = subprocess.Popen(argv, env=os.environ.copy())
+            try:
+                self.command = subprocess.Popen(argv, env=os.environ.copy(), stdin=subprocess.DEVNULL,
+                                                stdout=self._logs["application"], stderr=subprocess.STDOUT)
+            except OSError as exc:
+                raise DesktopError(f"Could not launch desktop command {argv[0]!r}: {exc}") from exc
+
+    def check_command(self) -> None:
+        if not self.command or self.command.poll() is None or self.command.returncode == 0:
+            return
+        stream = self._logs["application"]
+        stream.seek(0)
+        output = stream.read().strip()
+        detail = f"\nApplication output:\n{output[-3000:]}" if output else ""
+        raise DesktopError(f"Desktop command exited with status {self.command.returncode}.{detail}")
+
+    def _startup_error(self, message: str) -> DesktopError:
+        details = []
+        for name, stream in (self._logs or {}).items():
+            if name == "application":
+                continue
+            stream.seek(0)
+            content = stream.read().strip()
+            if content:
+                details.append(f"{name}: {content[-3000:]}")
+        return DesktopError(message + ("\nStartup output:\n" + "\n".join(details) if details else " Check that the installed X11 and Xfce packages match your distribution."))
+
+    @staticmethod
+    def _has_visible_desktop() -> bool:
+        try:
+            with mss.MSS() as grabber:
+                monitor = grabber.monitors[1]
+                shot = grabber.grab(monitor)
+            sample = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX").resize((32, 24))
+            colors = set(sample.get_flattened_data())
+            return len(colors) > 1 and any(max(color) > 16 for color in colors)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _process_state(pid: str) -> str | None:
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text()
+            return stat.rsplit(")", 1)[1].split()[0]
+        except (OSError, IndexError):
+            return None
 
     def __exit__(self, *_: object) -> None:
-        for process in (self.command, self.wm, self.process):
+        for process in (self.command, self.session, self.process):
             if process and process.poll() is None:
                 process.terminate()
                 try:
@@ -245,3 +330,11 @@ class VirtualDisplay:
             os.environ.pop("DISPLAY", None)
         else:
             os.environ["DISPLAY"] = self.old_display
+        if self.old_xauthority is None:
+            os.environ.pop("XAUTHORITY", None)
+        else:
+            os.environ["XAUTHORITY"] = self.old_xauthority
+        if self._auth_dir:
+            shutil.rmtree(self._auth_dir, ignore_errors=True)
+        for stream in (self._logs or {}).values():
+            stream.close()

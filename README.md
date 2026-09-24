@@ -18,11 +18,13 @@ Or add `~/.local/bin` to the remote account's `PATH` and run `tisplay`:
 ssh -t user@computer 'PATH="$HOME/.local/bin:$PATH" tisplay'
 ```
 
-The installer puts the command in `~/.local/bin` and installs missing system and Python dependencies. Linux gets X11 input support plus Xvfb, Openbox, and xterm for headless use. On macOS, use a logged-in desktop and grant your terminal or Python **Screen Recording** and **Accessibility** permissions when prompted. `--virtual` is for headless Linux only.
+The installer puts the command in `~/.local/bin` and installs missing system and Python dependencies. Linux gets X11 input support and, for headless use, Xvfb, Xauthority tools, D-Bus, and the Xfce desktop (session, panel, window manager, desktop, file manager, and terminal). This adds a lightweight desktop environment to the system. On macOS, use a logged-in desktop and grant your terminal or Python **Screen Recording** and **Accessibility** permissions when prompted. `--virtual` is for headless Linux only.
 
 `tisplay` shows an interactive desktop inside a terminal. On Linux, it uses an accessible X11 display; if no display is available, it starts a private virtual desktop automatically. It streams each frame through the terminal's normal output (including an SSH PTY), and sends keyboard and mouse input back to the captured machine. Nothing listens on a network port and the video does not rely on a shared filesystem.
 
 On Kitty Graphics Protocol terminals, including Ghostty-based Cmux, it sends full-color compressed frames inline. Other terminals use a lower-resolution ANSI true-color renderer. `--graphics auto` probes for Kitty support after checking common terminal markers; use `--graphics kitty` to force the sharp path or `--graphics ansi` for maximum compatibility. Kitty graphics preserve the capture's full color; output is capped at 1600 pixels wide by default to keep SSH traffic manageable.
+
+To check the terminal's graphics output without opening an X11 session or reading the desktop, run `tisplay --test-pattern`. It displays four color fields with a `TISPLAY TEST` label through the same renderer and quits with `q` or `Ctrl-C`.
 
 ## Use locally
 
@@ -40,14 +42,14 @@ On Linux, an unset `DISPLAY` makes `tisplay` look for a reachable local X11 desk
 
 ## Headless Linux
 
-If no X11 desktop is accessible, the default command starts a private Xvfb screen and Openbox, then opens xterm. Use `--virtual` to force this mode even when an X11 display is available. The installer installs these system dependencies. To launch a different application instead:
+If no X11 desktop is accessible, the default command starts a private Xvfb screen and a complete Xfce session, including its panel, window manager, desktop, and applications menu. It authenticates the private X server with a temporary Xauthority cookie and waits for the window manager and panel before capturing. Use `--virtual` to force this mode even when an X11 display is available. The installer installs these system dependencies. To launch a different application inside that desktop:
 
 ```sh
 ssh -t user@server '~/.local/bin/tisplay --virtual -- firefox --no-remote'
-ssh -t user@server '~/.local/bin/tisplay --virtual --width 1600 --height 900 -- xfce4-session'
+ssh -t user@server '~/.local/bin/tisplay --virtual --width 1600 --height 900 -- firefox --no-remote'
 ```
 
-The virtual desktop and launched command stop when `tisplay` exits. Linux Wayland capture is not currently supported directly; `tisplay` does not capture the primary Wayland desktop. Use an accessible X11 session or the virtual desktop. macOS has no virtual-display mode and needs an active logged-in desktop.
+The virtual desktop and launched command stop when `tisplay` exits. The headless session is Xfce; it is a normal interactive desktop session without a login manager. Linux Wayland capture is not currently supported directly; `tisplay` does not capture the primary Wayland desktop. Use an accessible X11 session or the virtual desktop. macOS has no virtual-display mode and needs an active logged-in desktop.
 
 ## Options
 
@@ -55,7 +57,8 @@ The virtual desktop and launched command stop when `tisplay` exits. Linux Waylan
 --graphics auto|kitty|ansi   renderer selection (default auto)
 --fps N                     refresh cap, 1 to 60 (default 12)
 --max-width PX              capture width cap (default 1600)
---virtual                   start private Xvfb desktop on Linux
+--virtual                   force a full Xfce desktop on Xvfb on Linux
+--test-pattern              show synthetic color fields without desktop access
 --width PX --height PX      virtual desktop size (default 1280x800)
 ```
 

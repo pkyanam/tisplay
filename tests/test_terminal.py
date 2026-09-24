@@ -1,4 +1,6 @@
 import base64
+import random
+import re
 import zlib
 
 from PIL import Image
@@ -24,14 +26,34 @@ class FakeController:
         self.buttons.append(args)
 
 
-def test_kitty_renderer_emits_graphics_protocol_and_png_payload():
-    image = Image.new("RGB", (16, 12), "#ff0000")
+def decode_kitty_transmission(rendered):
+    """Read the actual Kitty APC chunks and reconstruct their compressed data."""
+    commands = re.findall(rb"\x1b_G([^;]*);([^\x1b]*)\x1b\\", rendered)
+    assert commands
+    control = dict(item.split(b"=", 1) for item in commands[0][0].split(b","))
+    assert control[b"a"] == b"T"
+    assert control[b"f"] == b"24"
+    assert control[b"o"] == b"z"
+    assert control[b"C"] == b"1"
+    assert control[b"m"] == (b"1" if len(commands) > 1 else b"0")
+    for continuation, _ in commands[1:]:
+        assert continuation in (b"m=0", b"m=1")
+    assert [chunk[0].split(b"=")[-1] for chunk in commands] == [
+        *([b"1"] * (len(commands) - 1)), b"0"
+    ]
+    encoded = b"".join(payload for _, payload in commands)
+    return control, zlib.decompress(base64.b64decode(encoded))
+
+
+def test_kitty_renderer_emits_decodable_chunked_rgb_payload():
+    raw = random.Random(0).randbytes(120 * 80 * 3)
+    image = Image.frombytes("RGB", (120, 80), raw)
     rendered = render_kitty(image, 80, 24)
-    assert rendered.startswith(b"\x1b[H\x1b_Ga=T")
-    assert b"a=T,f=24,o=z" in rendered
-    encoded = rendered.split(b"m=0;", 1)[1].split(b"\x1b\\", 1)[0]
-    payload = zlib.decompress(base64.b64decode(encoded))
-    assert payload == bytes((255, 0, 0)) * (16 * 12)
+    assert rendered.startswith(b"\x1b[H")
+    control, payload = decode_kitty_transmission(rendered)
+    assert control[b"s"] == b"120"
+    assert control[b"v"] == b"80"
+    assert payload == raw
 
 
 def test_kitty_stream_places_new_frame_before_retiring_previous_image():
@@ -54,6 +76,14 @@ def test_ansi_renderer_uses_truecolor_half_blocks():
     rendered = render_blocks(image)
     assert "▀".encode() in rendered
     assert b"38;2;18;52;86" in rendered
+
+
+def test_test_pattern_screen_generates_distinct_color_fields():
+    frame = cli.TestPatternScreen(320, 240).frame()
+    assert frame.size == (320, 240)
+    assert {frame.getpixel(point) for point in ((20, 20), (300, 20), (20, 220), (300, 220))} == {
+        (240, 32, 32), (32, 220, 64), (40, 80, 240), (240, 220, 32)
+    }
 
 
 def test_kitty_fit_preserves_source_aspect_and_reports_letterbox():

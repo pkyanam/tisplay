@@ -14,7 +14,7 @@ import time
 import termios
 from contextlib import contextmanager, nullcontext
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageOps
 
 from . import __version__
 from .capture import DesktopError, Screen, VirtualDisplay, discover_accessible_x11_display, make_controller
@@ -103,6 +103,42 @@ def terminal_pixel_size() -> tuple[int, int] | None:
         return (values[2], values[3]) if values[2] and values[3] else None
     except (OSError, AttributeError):
         return None
+
+
+class TestPatternScreen:
+    """Synthetic color bars for checking the terminal graphics path without X11."""
+
+    def __init__(self, width: int = 1024, height: int = 768) -> None:
+        self.monitor = {"left": 0, "top": 0, "width": width, "height": height}
+
+    def frame(self, max_width: int = 1920) -> Image.Image:
+        width, height = self.monitor["width"], self.monitor["height"]
+        image = Image.new("RGB", (width, height), "black")
+        draw = ImageDraw.Draw(image)
+        middle_x, middle_y = width // 2, height // 2
+        for box, color in (
+            ((0, 0, middle_x, middle_y), (240, 32, 32)),
+            ((middle_x, 0, width, middle_y), (32, 220, 64)),
+            ((0, middle_y, middle_x, height), (40, 80, 240)),
+            ((middle_x, middle_y, width, height), (240, 220, 32)),
+        ):
+            draw.rectangle(box, fill=color)
+        draw.rectangle((width // 4, height // 2 - 28, 3 * width // 4, height // 2 + 28), fill=(0, 0, 0))
+        draw.text((width // 2 - 68, height // 2 - 8), "TISPLAY TEST", fill=(255, 255, 255))
+        if width > max_width:
+            image = image.resize((max_width, max(1, round(height * max_width / width))), Image.Resampling.LANCZOS)
+        return image
+
+
+class NoopController:
+    def key(self, *_: object) -> None:
+        pass
+
+    def button(self, *_: object) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
 
 
 def _csi_final(data: bytes) -> int | None:
@@ -212,11 +248,9 @@ def startup_display(args: argparse.Namespace):
             auto_virtual = True
     use_virtual = args.virtual or auto_virtual
     if use_virtual:
-        missing = [name for name in ("Xvfb", "openbox") if not shutil.which(name)]
-        if not args.command and not shutil.which("xterm"):
-            missing.append("xterm")
+        missing = [name for name in ("Xvfb", "xauth", "dbus-run-session", "startxfce4", "xfce4-panel", "xprop", "pgrep") if not shutil.which(name)]
         if missing:
-            raise DesktopError(f"Virtual desktop dependencies missing ({', '.join(missing)}). Install them with: sudo apt install xvfb openbox xterm")
+            raise DesktopError(f"Full virtual desktop dependencies missing ({', '.join(missing)}). Re-run install.sh to install Xfce, D-Bus, Xvfb, and X11 tools.")
     context = VirtualDisplay(args.width, args.height) if use_virtual else nullcontext()
     try:
         with context as display:
@@ -239,14 +273,16 @@ def run(args: argparse.Namespace) -> int:
     else:
         graphics = detect_graphics()
 
-    with startup_display(args) as (display, use_virtual):
-        if use_virtual:
-            if args.command:
-                display.launch(args.command)
-            else:
-                display.launch([shutil.which("xterm"), "-geometry", "100x30+40+40"])
-        screen = Screen(allow_wayland=use_virtual)
-        controller = make_controller()
+    if getattr(args, "test_pattern", False):
+        display_context = nullcontext((None, False))
+    else:
+        display_context = startup_display(args)
+    with display_context as (display, use_virtual):
+        if use_virtual and args.command:
+            display.launch(args.command)
+        test_pattern = getattr(args, "test_pattern", False)
+        screen = TestPatternScreen(args.width, args.height) if test_pattern else Screen(allow_wayland=use_virtual)
+        controller = NoopController() if test_pattern else make_controller()
         kitty_renderer = KittyRenderer()
         pending = bytearray()
         escape_since = None
@@ -264,6 +300,8 @@ def run(args: argparse.Namespace) -> int:
                     next_frame = 0.0
                     while True:
                         now = time.monotonic()
+                        if use_virtual and args.command:
+                            display.check_command()
                         if now >= next_frame:
                             cols, rows = terminal_size()
                             frame = screen.frame(args.max_width)
@@ -315,10 +353,11 @@ def main() -> None:
     parser.add_argument("--graphics", choices=("auto", "kitty", "ansi"), default="auto", help="auto-detect Kitty graphics, or force a renderer")
     parser.add_argument("--fps", type=float, default=12, help="maximum refresh rate (default: 12)")
     parser.add_argument("--max-width", type=int, default=1600, help="maximum captured image width (default: 1600)")
-    parser.add_argument("--virtual", action="store_true", help="start a private Xvfb desktop on headless Linux")
+    parser.add_argument("--virtual", action="store_true", help="force a private Xfce desktop on Xvfb on Linux")
+    parser.add_argument("--test-pattern", action="store_true", help="stream synthetic color bars without opening a desktop or injecting input")
     parser.add_argument("--width", type=int, default=1280, help="virtual display width (default: 1280)")
     parser.add_argument("--height", type=int, default=800, help="virtual display height (default: 800)")
-    parser.add_argument("command", nargs=argparse.REMAINDER, help="command to launch in the virtual desktop (after --)")
+    parser.add_argument("command", nargs=argparse.REMAINDER, help="optional command to launch inside the virtual desktop (after --)")
     args = parser.parse_args()
     args.command = args.command[1:] if args.command and args.command[0] == "--" else args.command
     if args.fps <= 0 or args.fps > 60:
