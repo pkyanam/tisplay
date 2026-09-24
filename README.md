@@ -75,3 +75,5 @@ python3 -m pytest
 ```
 
 The automated tests cover stream encoding and input mapping. Hardware capture, platform permission prompts, and live Cmux rendering need a real display and terminal and are not simulated by those tests.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and contribution guidance, and [SECURITY.md](SECURITY.md) to report a vulnerability.

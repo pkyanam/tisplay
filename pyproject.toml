@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Interactive remote desktop streaming over a terminal or SSH"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = "MIT"
 dependencies = ["mss>=9", "Pillow>=10", "pynput>=1.7"]
 
 [project.optional-dependencies]
