@@ -130,7 +130,10 @@ class XTestController:
             self.xtest.fake_input(self.display, self.X.KeyPress if down else self.X.KeyRelease, keycode)
             if shifted and not down:
                 self.xtest.fake_input(self.display, self.X.KeyRelease, shift_code)
-            self.display.flush()
+            # Wait for X11 to process each key event before returning. Merely
+            # flushing can queue a press and its release together, which some
+            # clients (including terminal emulators) may miss under Xvfb.
+            self.display.sync()
 
     def button(self, name: str, down: bool, x: int, y: int) -> None:
         root = self.display.screen().root
