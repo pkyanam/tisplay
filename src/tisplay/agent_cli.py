@@ -15,7 +15,7 @@ import secrets
 import sys
 import time
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from . import __version__
 
@@ -360,18 +360,29 @@ def _attach(client: Any, args: argparse.Namespace) -> int:
     content_box = (0.0, 0.0, 1.0, 1.0)
     leased = False
     try:
+        renew_at = 0.0
+
+        def renew_control() -> None:
+            nonlocal renew_at
+            # Check immediately before input as well as from the render loop.
+            # Slow capture or terminal output can block that loop past the
+            # lease deadline; renew only when the shared deadline is due.
+            if time.monotonic() < renew_at:
+                return
+            client.control(args.session, action="acquire", owner=controller.owner, lease_seconds=60)
+            renew_at = time.monotonic() + 20
+
         if not args.view_only:
-            client.control(args.session, action="acquire", owner=controller.owner)
+            renew_control()
             leased = True
+            controller.before_flush = renew_control
         with Terminal(sys.stdin.fileno()):
             begin_terminal()
             sys.stderr.write("tisplay attach: Ctrl-] disconnects | " + ("view only" if args.view_only else "input controls the live desktop") + "\n")
-            renew_at = time.monotonic() + 20
             while True:
                 now = time.monotonic()
                 if not args.view_only and now >= renew_at:
-                    client.control(args.session, action="acquire", owner=controller.owner)
-                    renew_at = now + 20
+                    renew_control()
                 if now >= next_frame:
                     result = client.capture(args.session, max_width=args.max_width, register_capture=False)
                     monitor = result.get("frame", {}).get("monitor")
@@ -412,7 +423,18 @@ def _attach(client: Any, args: argparse.Namespace) -> int:
     finally:
         try:
             if not args.view_only:
-                controller.close()
+                # Cleanup may release keys only; it must never reacquire
+                # control or retry queued user actions.
+                controller.before_flush = None
+                controller.discard_pending()
+                try:
+                    controller.close()
+                except Exception as exc:
+                    # Cleanup must not replace the input/capture error that
+                    # caused attach to exit. The daemon releases held input
+                    # when this lease expires or is released.
+                    controller.discard()
+                    sys.stderr.write(f"tisplay attach: could not release held keys: {exc}\n")
         finally:
             if leased:
                 try: client.control(args.session, action="release", owner=controller.owner)
@@ -425,13 +447,16 @@ def _attach(client: Any, args: argparse.Namespace) -> int:
 
 class _AttachController:
     """Adapt the existing terminal parser to the remote input API."""
-    def __init__(self, client: Any, session_id: str, readonly: bool = False):
+    def __init__(self, client: Any, session_id: str, readonly: bool = False,
+                 before_flush: Callable[[], None] | None = None):
         self.client, self.session_id = client, session_id
         self.readonly = readonly
+        self.before_flush = before_flush
         self.owner: str | None = None
         self._held: tuple[str, int, int] | None = None
         self._actions: list[dict[str, Any]] = []
         self._held_keys: set[str] = set()
+        self._failed = False
         self.frame_id: int | str | None = None
         self.capture_id: str | None = None
 
@@ -477,13 +502,34 @@ class _AttachController:
     def flush(self) -> None:
         if self._actions:
             actions, self._actions = self._actions, []
-            self.client.input(self.session_id, actions=actions, **({"owner": self.owner} if self.owner else {}))
+            try:
+                if self.before_flush:
+                    self.before_flush()
+                self.client.input(self.session_id, actions=actions, **({"owner": self.owner} if self.owner else {}))
+            except Exception:
+                # The input request may have been rejected or partially
+                # applied. Never replay its user actions during cleanup.
+                self._failed = True
+                raise
 
     def close(self) -> None:
+        if self._failed:
+            self.discard()
+            return
         if self._held_keys:
             self._actions.extend({"type": "key_up", "name": [key]} for key in sorted(self._held_keys))
             self._held_keys.clear()
         self.flush()
+
+    def discard_pending(self) -> None:
+        """Drop unsubmitted actions before the final held-key release."""
+        self._actions.clear()
+
+    def discard(self) -> None:
+        """Forget queued cleanup actions after control ownership is lost."""
+        self._actions.clear()
+        self._held_keys.clear()
+        self._held = None
 
 
 def dispatch(args: argparse.Namespace) -> int:

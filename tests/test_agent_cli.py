@@ -166,6 +166,20 @@ def test_attach_controller_batches_input_and_releases_held_keys():
     assert calls[-1][1] == [{"type": "key_up", "name": ["ctrl"]}]
 
 
+def test_attach_cleanup_drops_unsubmitted_actions_but_releases_held_key():
+    calls = []
+
+    class FakeClient:
+        def input(self, session, actions, **kwargs):
+            calls.append(actions)
+
+    controller = agent_cli._AttachController(FakeClient(), "s1")
+    controller.key("a", True)
+    controller.discard_pending()
+    controller.close()
+    assert calls == [[{"type": "key_up", "name": ["a"]}]]
+
+
 def test_attach_literal_space_plus_and_ctrl_key_reach_engine(monkeypatch):
     from tisplay.daemon import Engine, Session
 
@@ -203,6 +217,157 @@ def test_attach_literal_space_plus_and_ctrl_key_reach_engine(monkeypatch):
     bridge.key("+", True)
     bridge.close()
     assert events[-2:] == [("+", True), ("+", False)]
+
+
+def test_attach_renews_expired_lease_before_input(monkeypatch):
+    from tisplay.daemon import Engine, Session
+
+    engine = Engine()
+    session = Session("attach-lease", 800, 600)
+    events = []
+    owner = "attach-operator"
+
+    class RecordingController:
+        def key(self, key, down): events.append((key, down))
+        def close(self): pass
+
+    monkeypatch.setattr("tisplay.daemon.make_controller", RecordingController)
+    engine.control(session, {"action": "acquire", "owner": owner})
+    session.control_until = 0  # Simulate a long blocking capture/write.
+
+    class EngineClient:
+        def control(self, session_id, **kwargs):
+            assert session_id == session.id
+            return engine.control(session, kwargs)
+        def input(self, session_id, actions, **kwargs):
+            assert session_id == session.id
+            return engine.input(session, {"actions": actions, **kwargs})
+
+    client = EngineClient()
+    bridge = agent_cli._AttachController(
+        client, session.id,
+        before_flush=lambda: client.control(session.id, action="acquire", owner=owner, lease_seconds=60),
+    )
+    bridge.owner = owner
+    bridge.key("a", True)
+    bridge.flush()
+    assert events == [("a", True)]
+    assert session.control_owner == owner
+
+
+def test_attach_does_not_take_over_another_owner_during_renewal():
+    from tisplay.daemon import Engine, EngineError, Session
+
+    engine = Engine()
+    session = Session("attach-lease-busy", 800, 600, control_owner="another-owner", control_until=9999999999)
+    sends = []
+    renewals = []
+
+    class Client:
+        def control(self, session_id, **kwargs):
+            renewals.append(kwargs)
+            return engine.control(session, kwargs)
+        def input(self, *args, **kwargs): sends.append((args, kwargs))
+
+    client = Client()
+    bridge = agent_cli._AttachController(
+        client, session.id,
+        before_flush=lambda: client.control(session.id, action="acquire", owner="attach-owner", lease_seconds=60),
+    )
+    bridge.owner = "attach-owner"
+    bridge.key("a", True)
+    with pytest.raises(EngineError, match="control is held by another owner"):
+        bridge.flush()
+    bridge.close()
+    assert not sends
+    assert len(renewals) == 1  # Cleanup did not retry the failed user batch.
+    assert session.control_owner == "another-owner"
+
+
+def test_attach_renews_before_input_after_blocking_capture(monkeypatch):
+    import base64
+    import io
+    import signal
+    import time as wall_clock
+    from PIL import Image
+    from tisplay.daemon import Engine, Session
+    import tisplay.terminal as terminal
+
+    engine = Engine()
+    session = Session("attach-slow-frame", 800, 600)
+    events = []
+    clock = [0.0]
+    wall_start = wall_clock.time()
+    monkeypatch.setattr("tisplay.daemon.time.time", lambda: wall_start + clock[0])
+    input_chunks = [b"a", b"b", b"\x1d"]
+    png_buffer = io.BytesIO()
+    Image.new("RGB", (2, 2), "black").save(png_buffer, format="PNG")
+    png = base64.b64encode(png_buffer.getvalue()).decode("ascii")
+
+    class RecordingController:
+        def key(self, key, down): events.append((key, down))
+        def close(self): pass
+
+    monkeypatch.setattr("tisplay.daemon.make_controller", RecordingController)
+    control_calls = []
+
+    class Client:
+        def status(self, sid):
+            assert sid == session.id
+            return {"monitor": {"left": 0, "top": 0, "width": 800, "height": 600}}
+        def control(self, sid, **kwargs):
+            control_calls.append((kwargs["action"], clock[0]))
+            return engine.control(session, kwargs)
+        def capture(self, sid, **kwargs):
+            assert sid == session.id
+            clock[0] = 61.0  # Capture/write stalled beyond the 60s lease.
+            return {"png": png, "frame": {"content_id": "same", "monitor": {"left": 0, "top": 0, "width": 800, "height": 600}}}
+        def input(self, sid, actions, **kwargs):
+            assert control_calls[-1] == ("acquire", 61.0)
+            return engine.input(session, {"actions": actions, **kwargs})
+
+    class FakeTerminal:
+        def __init__(self, _fd): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+
+    class FakeTTY:
+        def __init__(self, fd): self.fd = fd
+        def isatty(self): return True
+        def fileno(self): return self.fd
+
+    with open("/dev/null", "rb") as stdin_file, open("/dev/null", "wb") as stdout_file:
+        monkeypatch.setattr(agent_cli.sys, "stdin", FakeTTY(stdin_file.fileno()))
+        monkeypatch.setattr(agent_cli.sys, "stdout", FakeTTY(stdout_file.fileno()))
+        monkeypatch.setattr(terminal, "Terminal", FakeTerminal)
+        monkeypatch.setattr(terminal, "begin_terminal", lambda: None)
+        monkeypatch.setattr(terminal, "terminal_size", lambda: (80, 24))
+        monkeypatch.setattr(terminal, "write_all", lambda *_args: None)
+        monkeypatch.setattr(agent_cli.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(agent_cli.os, "read", lambda *_args: input_chunks.pop(0))
+        select_calls = [0]
+        def ready_once(readers, _writers, _errors, _timeout):
+            select_calls[0] += 1
+            return (readers if select_calls[0] <= 3 else [], [], [])
+        monkeypatch.setattr("select.select", ready_once)
+        monkeypatch.setattr(agent_cli, "_content_id", lambda _result: "same")
+        monkeypatch.setattr("tisplay.cli.fit_ansi", lambda image, *_args: (image, (0, 0, 1, 1)))
+        monkeypatch.setattr(terminal, "render_blocks", lambda *_args: b"")
+        monkeypatch.setattr("tisplay.cli.detect_graphics", lambda: "ansi")
+        monkeypatch.setattr("tisplay.cli.terminal_pixel_size", lambda: (800, 600))
+        old_signal = signal.getsignal(signal.SIGWINCH)
+        monkeypatch.setattr(signal, "signal", lambda *_args: old_signal)
+
+        args = type("Args", (), {
+            "session": session.id, "view_only": False, "graphics": "ansi", "fps": 60,
+            "max_width": 800, "stream_quality": "lossless", "owner": "attach-test",
+        })()
+        assert agent_cli._attach(Client(), args) == 0
+
+    assert [action for action, _at in control_calls] == ["acquire", "acquire", "release"]
+    assert control_calls[0][1] == 0.0
+    assert control_calls[1][1] == 61.0
+    assert events == [("a", True), ("a", False), ("b", True), ("b", False)]
 
 
 def test_view_only_attach_controller_never_queues_input():
