@@ -17,6 +17,20 @@ def test_top_level_help_aliases_show_command_menu(flag, monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "session" in output
     assert "AGENT WORKFLOW" in output
+    assert "--skill" in output
+
+
+def test_bundled_skill_is_printed_offline(monkeypatch, capsys):
+    from pathlib import Path
+
+    expected = Path(__file__).parents[1].joinpath("src", "tisplay", "SKILL.md").read_text()
+    monkeypatch.setattr(sys, "argv", ["tisplay", "--skill"])
+    with pytest.raises(SystemExit) as result:
+        cli.main()
+    assert result.value.code == 0
+    assert capsys.readouterr().out == expected
+    assert "tisplay.capture" not in sys.modules
+    assert "tisplay.daemon" not in sys.modules
 
 
 @pytest.mark.parametrize("argv,expected", [

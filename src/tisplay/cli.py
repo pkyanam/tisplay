@@ -17,8 +17,6 @@ from contextlib import contextmanager, nullcontext
 from PIL import Image, ImageDraw, ImageOps
 
 from . import __version__
-from .capture import DesktopError, Screen, VirtualDisplay, discover_accessible_x11_display, make_controller
-from .terminal import KittyRenderer, Terminal, begin_terminal, render_blocks, terminal_size
 
 KEY_SEQUENCES = {
     b"\x1b[A": "up", b"\x1b[B": "down", b"\x1b[C": "right", b"\x1b[D": "left",
@@ -353,6 +351,9 @@ def startup_display(args: argparse.Namespace):
 
 
 def run(args: argparse.Namespace) -> int:
+    from .capture import DesktopError, Screen, VirtualDisplay, discover_accessible_x11_display, make_controller
+    from .terminal import KittyRenderer, Terminal, begin_terminal, render_blocks, terminal_size
+
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise DesktopError("tisplay needs an interactive terminal. Over SSH, connect with `ssh -t host tisplay`.")
     if args.graphics == "kitty":
@@ -442,6 +443,12 @@ def main() -> None:
     # Keep the original one-command interactive mode intact, while routing the
     # persistent session command tree through its structured client frontend.
     argv = ["--help" if token == "-help" else token for token in sys.argv[1:]]
+    if argv == ["--skill"]:
+        # Keep this path useful on SSH-only machines and in agent discovery:
+        # reading the bundled instructions must not initialize a desktop or daemon.
+        from importlib.resources import files
+        print(files("tisplay").joinpath("SKILL.md").read_text(encoding="utf-8"), end="")
+        raise SystemExit(0)
     if argv == ["--engine-stdio"]:
         from .daemon import run_stdio
         raise SystemExit(run_stdio())
@@ -452,6 +459,7 @@ def main() -> None:
         from .agent_cli import build_parser
         build_parser().print_help()
         raise SystemExit(0)
+    from .capture import DesktopError
     command_index = 0
     while command_index < len(argv):
         if argv[command_index] == "--host" and command_index + 1 < len(argv):
@@ -469,6 +477,7 @@ def main() -> None:
         build_parser().print_help()
         raise SystemExit(0)
     parser = argparse.ArgumentParser(prog="tisplay", description="Interactive desktop stream in a terminal or over SSH.")
+    parser.add_argument("--skill", action="store_true", help="print the bundled agent skill (offline; no desktop required)")
     parser.add_argument("--version", action="version", version=f"tisplay {__version__}")
     parser.add_argument("--graphics", choices=("auto", "kitty", "ansi"), default="auto", help="auto-detect Kitty graphics, or force a renderer")
     parser.add_argument("--preset", choices=tuple(PRESETS), default="balanced", help="quality keeps source resolution, balanced targets 60 fps, fast reduces capture and bandwidth (default: balanced)")

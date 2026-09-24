@@ -103,6 +103,7 @@ def build_parser() -> Parser:
     parser.add_argument("--host", default=None, help="SSH destination for remote sessions (for example user@pi)")
     parser.add_argument("--json", action="store_true", default=False, help="print one machine-readable JSON object")
     parser.add_argument("--version", action="version", version=f"tisplay {__version__}")
+    parser.add_argument("--skill", action="store_true", help="print the bundled agent skill (offline; no desktop required)")
     roots = parser.add_subparsers(dest="agent_command", metavar="COMMAND")
 
     session = roots.add_parser("session", help="start and manage persistent desktop sessions", formatter_class=HelpFormatter)
