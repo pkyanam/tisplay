@@ -1,0 +1,110 @@
+from __future__ import annotations
+
+import sys
+import pytest
+
+from tisplay import cli
+from tisplay import agent_cli
+from tisplay.client import EngineError
+
+
+@pytest.mark.parametrize("flag", ["-h", "--help", "-help"])
+def test_top_level_help_aliases_show_command_menu(flag, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["tisplay", flag])
+    with pytest.raises(SystemExit) as result:
+        cli.main()
+    assert result.value.code == 0
+    output = capsys.readouterr().out
+    assert "session" in output
+    assert "AGENT WORKFLOW" in output
+
+
+@pytest.mark.parametrize("argv,expected", [
+    (["session", "-help"], "ACTION"),
+    (["session", "start", "-help"], "tisplay session start"),
+    (["click", "-help"], "tisplay click"),
+])
+def test_nested_single_dash_help_alias(argv, expected, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["tisplay", *argv])
+    with pytest.raises(SystemExit) as result:
+        cli.main()
+    assert result.value.code == 0
+    assert expected in capsys.readouterr().out
+
+
+def test_parser_accepts_host_prefix_and_command_after_double_dash():
+    args = agent_cli.build_parser().parse_args(
+        ["--host", "user@pi", "session", "start", "--virtual", "--name", "work", "--", "xterm"]
+    )
+    assert args.host == "user@pi"
+    assert args.name == "work"
+    assert args.command == ["--", "xterm"]
+
+
+def test_drag_cli_action_uses_engine_coordinate_contract():
+    args = agent_cli.build_parser().parse_args(
+        ["drag", "--session", "s1", "12", "34", "56", "78"]
+    )
+    assert agent_cli._actions_for(args) == [
+        {"type": "drag", "from_x": 12, "from_y": 34, "to_x": 56, "to_y": 78}
+    ]
+
+
+def test_start_resolves_preset_dimensions_and_omits_preset(monkeypatch):
+    calls = []
+
+    class FakeClient:
+        def start(self, **kwargs):
+            calls.append(kwargs)
+            return {"session_id": "s1"}
+        def close(self):
+            pass
+
+    monkeypatch.setattr(agent_cli, "_client", lambda host: FakeClient())
+    args = agent_cli.build_parser().parse_args(["session", "start", "--virtual", "--preset", "fast"])
+    assert agent_cli.dispatch(args) == 0
+    assert calls == [{"name": None, "virtual": True, "width": 1280, "height": 800, "command": None}]
+
+
+def test_attach_controller_batches_input_and_releases_held_keys():
+    calls = []
+
+    class FakeClient:
+        def input(self, session, actions, **kwargs):
+            calls.append((session, actions, kwargs))
+
+    controller = agent_cli._AttachController(FakeClient(), "s1")
+    controller.owner = "attach-1"
+    controller.frame_id = "geometry"
+    controller.key("ctrl", True)
+    controller.key("l", True)
+    controller.key("l", False)
+    controller.button("left", True, 10, 20)
+    controller.button("left", False, 12, 25)
+    controller.flush()
+
+    assert len(calls) == 1
+    assert calls[0][0] == "s1"
+    assert calls[0][2] == {"owner": "attach-1"}
+    assert calls[0][1][-1] == {
+        "type": "drag", "from_x": 10, "from_y": 20, "to_x": 12, "to_y": 25,
+        "button": "left", "frame_id": "geometry"
+    }
+
+    controller.close()
+    assert calls[-1][1] == [{"type": "key_up", "name": "ctrl"}]
+
+
+def test_json_engine_error_is_one_machine_readable_stdout_object(monkeypatch, capsys):
+    class FailingClient:
+        def input(self, *args, **kwargs):
+            raise EngineError("out of bounds", "invalid_request")
+        def close(self):
+            pass
+
+    monkeypatch.setattr(agent_cli, "_client", lambda host: FailingClient())
+    code = agent_cli.main(["click", "--session", "s1", "4", "9", "--json"])
+    assert code == 3
+    output = capsys.readouterr()
+    assert output.out == '{"ok":false,"error":{"code":"invalid_request","message":"out of bounds"}}\n'
+    assert output.err == ""

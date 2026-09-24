@@ -1,0 +1,14 @@
+# tisplay
+
+> See and control a computer's desktop from your terminal, including over SSH.
+
+- Project site: https://pkyanam.github.io/tisplay/
+- Source, issues, releases: https://github.com/pkyanam/tisplay
+- Human installation and usage: https://github.com/pkyanam/tisplay#readme
+- Agent quickstart: https://github.com/pkyanam/tisplay/blob/main/docs/agents/quickstart.md
+- Agent CLI contract and JSON actions: https://github.com/pkyanam/tisplay/blob/main/docs/agents/protocol.md
+- Current internal JSONL envelope schema (v1; CLI remains the supported public interface): https://github.com/pkyanam/tisplay/blob/main/schemas/agent-v1.schema.json
+- Agent examples: https://github.com/pkyanam/tisplay/tree/main/docs/agents/examples
+- Security policy: https://github.com/pkyanam/tisplay/blob/main/SECURITY.md
+
+The installed `tisplay --help` and `tisplay capabilities --json` are authoritative for the current CLI and backend. Direct Wayland capture and virtual desktop resize are unsupported. On Linux, virtual sessions use Xvfb/XFCE; macOS requires a logged-in desktop and permissions.

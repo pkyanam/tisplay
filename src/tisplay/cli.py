@@ -414,6 +414,34 @@ def run(args: argparse.Namespace) -> int:
 
 
 def main() -> None:
+    # Keep the original one-command interactive mode intact, while routing the
+    # persistent session command tree through its structured client frontend.
+    argv = ["--help" if token == "-help" else token for token in sys.argv[1:]]
+    if argv == ["--engine-stdio"]:
+        from .daemon import run_stdio
+        raise SystemExit(run_stdio())
+    agent_commands = {"session", "screenshot", "click", "double-click", "move", "drag", "scroll",
+                      "text", "key", "act", "wait", "control", "capabilities", "attach"}
+    if argv and argv[0] in ("-h", "--help"):
+        from .agent_cli import build_parser
+        build_parser().print_help()
+        raise SystemExit(0)
+    command_index = 0
+    while command_index < len(argv):
+        if argv[command_index] == "--host" and command_index + 1 < len(argv):
+            command_index += 2
+        elif argv[command_index] == "--json":
+            command_index += 1
+        else:
+            break
+    if command_index < len(argv) and argv[command_index] in agent_commands:
+        from .agent_cli import main as agent_main
+        raise SystemExit(agent_main(argv))
+    before_separator = argv[:argv.index("--")] if "--" in argv else argv
+    if any(token in ("-h", "--help") for token in before_separator):
+        from .agent_cli import build_parser
+        build_parser().print_help()
+        raise SystemExit(0)
     parser = argparse.ArgumentParser(prog="tisplay", description="Interactive desktop stream in a terminal or over SSH.")
     parser.add_argument("--version", action="version", version=f"tisplay {__version__}")
     parser.add_argument("--graphics", choices=("auto", "kitty", "ansi"), default="auto", help="auto-detect Kitty graphics, or force a renderer")
@@ -425,7 +453,7 @@ def main() -> None:
     parser.add_argument("--width", type=int, default=None, help="virtual display width (default comes from --preset)")
     parser.add_argument("--height", type=int, default=None, help="virtual display height (default comes from --preset)")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="optional command to launch inside the virtual desktop (after --)")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     args.command = args.command[1:] if args.command and args.command[0] == "--" else args.command
     args.fps, args.max_width, _, args.width, args.height = resolve_performance(
         args.preset, args.fps, args.max_width, args.width, args.height)

@@ -1,0 +1,641 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/pkyanam/tisplay/blob/main/schemas/agent-v1.schema.json",
+  "title": "tisplay agent protocol v1",
+  "description": "One JSON object per line over a private Unix socket or the SSH stdio bridge.",
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "point": {
+      "type": "object",
+      "required": [
+        "x",
+        "y"
+      ],
+      "properties": {
+        "x": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "button": {
+      "type": "string",
+      "enum": [
+        "left",
+        "middle",
+        "right"
+      ]
+    },
+    "keyName": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
+          }
+        }
+      ]
+    },
+    "frameGuard": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "inputAction": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "x",
+            "y"
+          ],
+          "properties": {
+            "type": {
+              "const": "move"
+            },
+            "x": {
+              "type": "integer"
+            },
+            "y": {
+              "type": "integer"
+            },
+            "frame_id": {
+              "$ref": "#/$defs/frameGuard"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "x",
+            "y"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "click",
+                "double_click"
+              ]
+            },
+            "x": {
+              "type": "integer"
+            },
+            "y": {
+              "type": "integer"
+            },
+            "button": {
+              "$ref": "#/$defs/button"
+            },
+            "frame_id": {
+              "$ref": "#/$defs/frameGuard"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "from_x",
+            "from_y",
+            "to_x",
+            "to_y"
+          ],
+          "properties": {
+            "type": {
+              "const": "drag"
+            },
+            "from_x": {
+              "type": "integer"
+            },
+            "from_y": {
+              "type": "integer"
+            },
+            "to_x": {
+              "type": "integer"
+            },
+            "to_y": {
+              "type": "integer"
+            },
+            "button": {
+              "$ref": "#/$defs/button"
+            },
+            "frame_id": {
+              "$ref": "#/$defs/frameGuard"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "x",
+            "y",
+            "delta_y"
+          ],
+          "properties": {
+            "type": {
+              "const": "scroll"
+            },
+            "x": {
+              "type": "integer"
+            },
+            "y": {
+              "type": "integer"
+            },
+            "delta_y": {
+              "type": "integer",
+              "minimum": -100,
+              "maximum": 100
+            },
+            "delta_x": {
+              "type": "integer",
+              "minimum": -100,
+              "maximum": 100
+            },
+            "frame_id": {
+              "$ref": "#/$defs/frameGuard"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "name"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "key",
+                "key_down",
+                "key_up"
+              ]
+            },
+            "name": {
+              "$ref": "#/$defs/keyName"
+            },
+            "frame_id": {
+              "$ref": "#/$defs/frameGuard"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "text"
+          ],
+          "properties": {
+            "type": {
+              "const": "text"
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 10000
+            },
+            "frame_id": {
+              "$ref": "#/$defs/frameGuard"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "waitAction": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "const": "wait"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30000
+        },
+        "interval_ms": {
+          "type": "integer",
+          "minimum": 20,
+          "maximum": 1000
+        }
+      },
+      "additionalProperties": false
+    },
+    "startArgs": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "virtual": {
+          "type": "boolean"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 320,
+          "maximum": 7680
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 240,
+          "maximum": 4320
+        },
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "maxItems": 128
+        }
+      },
+      "additionalProperties": false
+    },
+    "captureArgs": {
+      "type": "object",
+      "properties": {
+        "region": {
+          "type": "object",
+          "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+          ],
+          "properties": {
+            "x": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "y": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "width": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "height": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "scale": {
+          "type": "number",
+          "minimum": 0.05,
+          "maximum": 1
+        },
+        "max_width": {
+          "type": "integer",
+          "minimum": 32,
+          "maximum": 10000
+        }
+      },
+      "additionalProperties": false
+    },
+    "inputArgs": {
+      "type": "object",
+      "required": [
+        "actions"
+      ],
+      "properties": {
+        "actions": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/inputAction"
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 500,
+              "items": {
+                "$ref": "#/$defs/inputAction"
+              }
+            }
+          ]
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "additionalProperties": false
+    },
+    "batchArgs": {
+      "type": "object",
+      "required": [
+        "actions"
+      ],
+      "properties": {
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 500,
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/inputAction"
+              },
+              {
+                "$ref": "#/$defs/waitAction"
+              }
+            ]
+          }
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "stop_on_error": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "controlArgs": {
+      "type": "object",
+      "required": [
+        "action"
+      ],
+      "properties": {
+        "action": {
+          "enum": [
+            "acquire",
+            "release",
+            "status"
+          ]
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "lease_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        },
+        "takeover": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "request": {
+      "type": "object",
+      "required": [
+        "protocol_version",
+        "id",
+        "command",
+        "args"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "command": {
+          "enum": [
+            "start",
+            "list",
+            "status",
+            "resize",
+            "stop",
+            "capture",
+            "input",
+            "batch",
+            "control",
+            "capabilities"
+          ]
+        },
+        "session": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "args": {
+          "type": "object"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "start"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/startArgs"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "capture"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/captureArgs"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "input"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/inputArgs"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "batch"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/batchArgs"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "control"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/controlArgs"
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {}
+      },
+      "additionalProperties": false
+    },
+    "response": {
+      "type": "object",
+      "required": [
+        "protocol_version",
+        "id",
+        "ok"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "result": {
+          "type": "object"
+        },
+        "error": {
+          "$ref": "#/$defs/error"
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "result"
+          ],
+          "not": {
+            "required": [
+              "error"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": true
+            }
+          }
+        },
+        {
+          "required": [
+            "error"
+          ],
+          "not": {
+            "required": [
+              "result"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": false
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+}

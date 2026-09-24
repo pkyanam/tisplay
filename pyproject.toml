@@ -9,7 +9,12 @@ description = "Interactive remote desktop streaming over a terminal or SSH"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-dependencies = ["mss>=9", "Pillow>=10", "pynput>=1.7"]
+dependencies = [
+  "mss>=9",
+  "Pillow>=10",
+  "python-xlib>=0.33; sys_platform == 'linux'",
+  "pynput>=1.7; sys_platform != 'linux'",
+]
 
 [project.optional-dependencies]
 linux = ["python-xlib>=0.33"]

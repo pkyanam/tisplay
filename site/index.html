@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#172b4d">
+  <meta name="description" content="tisplay streams and controls a desktop from your terminal, including over SSH.">
+  <title>tisplay — the desktop, at the command line</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="masthead">
+    <div class="masthead-inner">
+      <a class="brand" href="#top" aria-label="tisplay home"><span class="brand-mark" aria-hidden="true">▧</span> tisplay</a>
+      <nav aria-label="Main navigation"><a href="#get-started">Get started</a><a href="#agent-guide">For agents</a><a href="https://github.com/pkyanam/tisplay">GitHub ↗</a></nav>
+    </div>
+  </header>
+  <main id="main">
+    <section class="hero frame" id="top">
+      <div class="window-bar"><span class="window-glyph" aria-hidden="true">▣</span><span>TISPLAY.EXE — REMOTE DESKTOP TOOLS</span><span class="bar-buttons" aria-hidden="true">_ □ ×</span></div>
+      <div class="hero-body">
+        <p class="eyebrow">A small window into another machine</p>
+        <h1>See the desktop.<br><span>Stay in your terminal.</span></h1>
+        <p class="lede">tisplay streams a live desktop into a terminal and forwards your keyboard and pointer input. Work on a local machine or connect through SSH—no extra server port to open.</p>
+        <div class="hero-actions"><a class="button primary" href="#get-started">Get tisplay <span aria-hidden="true">↓</span></a><a class="button" href="https://github.com/pkyanam/tisplay">Browse source <span aria-hidden="true">↗</span></a></div>
+      <div class="status-strip" aria-label="Project links"><a href="https://github.com/pkyanam/tisplay/actions/workflows/linux-desktop.yml">Linux desktop CI workflow</a><a href="https://github.com/pkyanam/tisplay/blob/main/LICENSE">MIT license</a><span>Python 3.10+</span></div>
+      </div>
+      <figure class="screen-shot"><img src="assets/tisplay-cmux-desktop.png" alt="A Linux desktop streamed inline in a Cmux terminal, with the tisplay status bar and SSH session visible"><figcaption><span>LIVE VIEW</span> A remote desktop, right in Cmux</figcaption></figure>
+    </section>
+
+    <section class="section intro-grid" aria-labelledby="how-title">
+      <div><p class="eyebrow">Made for the terminal</p><h2 id="how-title">A real desktop, where you already work.</h2></div>
+      <p>Use your terminal's Kitty graphics support for full-color frames, or let tisplay draw through a compatible ANSI true-color renderer. Click, scroll, and type in the stream. <kbd>Ctrl</kbd> + <kbd>]</kbd> closes a session.</p>
+    </section>
+
+    <section class="section start-section" id="get-started" aria-labelledby="start-title">
+      <div class="section-heading"><div><p class="eyebrow">Three ways in</p><h2 id="start-title">Choose a session</h2></div><p>Build a safe copyable command. The host field accepts an SSH destination such as <code>alice@workstation</code>.</p></div>
+      <div class="builder frame">
+        <div class="builder-tabs" role="tablist" aria-label="Session type">
+          <button role="tab" id="tab-local" aria-controls="panel-local" aria-selected="true" data-mode="local">Local desktop</button>
+          <button role="tab" id="tab-ssh" aria-controls="panel-ssh" aria-selected="false" data-mode="ssh" tabindex="-1">SSH desktop</button>
+          <button role="tab" id="tab-headless" aria-controls="panel-headless" aria-selected="false" data-mode="headless" tabindex="-1">Headless Linux</button>
+        </div>
+        <div class="builder-content">
+          <div id="panel-local" role="tabpanel" aria-labelledby="tab-local" data-panel="local"><h3>Use the desktop you are logged into</h3><p>Run the command in a terminal on the computer whose screen you want to see.</p></div>
+          <div id="panel-ssh" role="tabpanel" aria-labelledby="tab-ssh" data-panel="ssh" hidden><h3>Stream a remote machine over SSH</h3><p>SSH carries the image and input stream. Keep <code>-t</code> so the remote app gets a terminal.</p><label for="ssh-host">SSH destination</label><input id="ssh-host" type="text" inputmode="email" autocomplete="off" spellcheck="false" placeholder="alice@workstation" aria-describedby="host-help host-error"><small id="host-help">Letters, numbers, dots, underscores and hyphens only; no options or shell syntax.</small><span id="host-error" class="error" role="status" aria-live="polite"></span></div>
+          <div id="panel-headless" role="tabpanel" aria-labelledby="tab-headless" data-panel="headless" hidden><h3>Start an isolated XFCE desktop</h3><p>On Linux without an accessible X11 display, <code>--virtual</code> starts a private Xvfb + XFCE desktop. Direct Wayland capture is not supported.</p><label for="headless-host">SSH destination</label><input id="headless-host" type="text" inputmode="email" autocomplete="off" spellcheck="false" placeholder="alice@server" aria-describedby="headless-help headless-error"><small id="headless-help">Letters, numbers, dots, underscores and hyphens only; no options or shell syntax.</small><span id="headless-error" class="error" role="status" aria-live="polite"></span></div>
+          <div class="command-row"><pre><code id="generated-command">tisplay</code></pre><button class="copy-button" type="button" id="copy-command">Copy command</button></div>
+          <p class="copy-status" id="copy-status" role="status" aria-live="polite"></p>
+        </div>
+      </div>
+      <div class="install-note"><span class="pixel-icon" aria-hidden="true">▤</span><div><h3>First, install on the machine you want to access</h3><p>Linux installs Python, X11/Xvfb and XFCE dependencies; macOS requires Python 3.10+ and a logged-in desktop.</p><pre><code>curl -fsSL https://github.com/pkyanam/tisplay/raw/refs/heads/main/install.sh | bash</code></pre><p class="note">The installer uses sudo on Linux to add system dependencies, then installs tisplay in your user data directory. Read <a href="https://github.com/pkyanam/tisplay/blob/main/install.sh">install.sh</a> before running if you prefer to inspect it first.</p></div></div>
+    </section>
+
+    <section class="section details-grid" aria-label="Platform and graphics details">
+      <article class="inset-panel"><p class="eyebrow">Where it works</p><h2>Platform notes</h2><ul class="platform-list"><li><strong>Linux · X11</strong><span>Captures an accessible desktop. Without one, starts a private Xvfb + XFCE desktop.</span></li><li><strong>Linux · Wayland</strong><span>Direct capture is not supported. Use an X11 session or <code>--virtual</code>.</span></li><li><strong>macOS</strong><span>Uses the logged-in desktop; grant Screen Recording and Accessibility permission to your terminal or Python when prompted. No virtual display mode.</span></li></ul></article>
+      <article class="inset-panel"><p class="eyebrow">Picture in the prompt</p><h2>Two renderers</h2><p>Kitty Graphics Protocol shows full-color frames inline. Other terminals can use ANSI true-color half-blocks. Select one explicitly when auto-detection does not match your terminal.</p><pre><code>tisplay --graphics ansi</code></pre><p>Check the terminal path without accessing a desktop or sending input:</p><pre><code>tisplay --test-pattern</code></pre></article>
+    </section>
+
+    <section class="section agent-section" id="agent-guide" aria-labelledby="agents-title">
+      <div class="agent-card frame"><div class="window-bar"><span aria-hidden="true">▣</span><span>AGENT INTERFACE · DOCUMENTATION</span><span class="bar-buttons" aria-hidden="true">_ □ ×</span></div><div class="agent-content"><div><p class="eyebrow">For people and software agents</p><h2 id="agents-title">A clear command surface for automation.</h2><p>Discover the installed CLI and capabilities, manage an explicit session, then capture and interact through structured commands. The agent guide covers safe SSH use, action bounds, platform limits, and examples.</p></div><div class="agent-links"><a class="button primary" href="agents/">Agent quickstart <span aria-hidden="true">↗</span></a><a href="https://github.com/pkyanam/tisplay/tree/main/docs/agents">Browse agent docs on GitHub ↗</a></div></div></div>
+    </section>
+  </main>
+  <footer><div><a class="brand" href="#top"><span aria-hidden="true">▧</span> tisplay</a><p>Terminal-first desktop access, MIT licensed.</p></div><nav aria-label="Footer"><a href="https://github.com/pkyanam/tisplay">GitHub</a><a href="https://github.com/pkyanam/tisplay/releases">Releases</a><a href="https://github.com/pkyanam/tisplay/blob/main/SECURITY.md">Security</a><a href="https://github.com/pkyanam/tisplay/blob/main/CONTRIBUTING.md">Contributing</a><a href="llms.txt">llms.txt</a></nav></footer>
+</body>
+</html>

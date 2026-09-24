@@ -4,6 +4,8 @@
 
 **See and control a computer's desktop from your terminal—even over SSH.**
 
+[Project site](https://pkyanam.github.io/tisplay/) · [Agent quickstart](https://pkyanam.github.io/tisplay/agents/) · [Source and issues](https://github.com/pkyanam/tisplay) · [Releases](https://github.com/pkyanam/tisplay/releases)
+
 [![Linux desktop integration](https://github.com/pkyanam/tisplay/actions/workflows/linux-desktop.yml/badge.svg)](https://github.com/pkyanam/tisplay/actions/workflows/linux-desktop.yml)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)

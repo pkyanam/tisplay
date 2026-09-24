@@ -111,29 +111,33 @@ class XTestController:
     def key(self, name: str, down: bool) -> None:
         aliases = {
             "enter": "Return", "backspace": "BackSpace", "delete": "Delete", "ctrl": "Control_L",
+            "control": "Control_L", "shift": "Shift_L", "alt": "Alt_L", "meta": "Super_L", "cmd": "Super_L", "super": "Super_L", "space": "space",
             "tab": "Tab", "up": "Up", "down": "Down", "left": "Left", "right": "Right",
             "home": "Home", "end": "End", "page_up": "Page_Up", "page_down": "Page_Down",
             "insert": "Insert", "escape": "Escape",
         }
+        if name.lower().startswith("f") and name[1:].isdigit(): aliases[name] = f"F{name[1:]}"
         keysym = self.XK.string_to_keysym(aliases.get(name, name))
         if not keysym:
             if len(name) == 1:
                 keysym = ord(name)
             else:
-                return
+                raise DesktopError(f"Unsupported X11 key name: {name}")
         keycode = self.display.keysym_to_keycode(keysym)
-        if keycode:
-            shifted = name.isupper() or name in "~!@#$%^&*()_+{}|:\"<>?"
-            shift_code = self.display.keysym_to_keycode(self.XK.string_to_keysym("Shift_L"))
-            if shifted and down:
-                self.xtest.fake_input(self.display, self.X.KeyPress, shift_code)
-            self.xtest.fake_input(self.display, self.X.KeyPress if down else self.X.KeyRelease, keycode)
-            if shifted and not down:
-                self.xtest.fake_input(self.display, self.X.KeyRelease, shift_code)
-            # Wait for X11 to process each key event before returning. Merely
-            # flushing can queue a press and its release together, which some
-            # clients (including terminal emulators) may miss under Xvfb.
-            self.display.sync()
+        if not keycode:
+            raise DesktopError(f"X11 display has no key mapping for: {name}")
+        shifted = name.isupper() or name in "~!@#$%^&*()_+{}|:\"<>?"
+        shift_code = self.display.keysym_to_keycode(self.XK.string_to_keysym("Shift_L"))
+        if shifted and not shift_code: raise DesktopError("X11 display has no Shift key mapping")
+        if shifted and down:
+            self.xtest.fake_input(self.display, self.X.KeyPress, shift_code)
+        self.xtest.fake_input(self.display, self.X.KeyPress if down else self.X.KeyRelease, keycode)
+        if shifted and not down:
+            self.xtest.fake_input(self.display, self.X.KeyRelease, shift_code)
+        # Wait for X11 to process each key event before returning. Merely
+        # flushing can queue a press and its release together, which some
+        # clients (including terminal emulators) may miss under Xvfb.
+        self.display.sync()
 
     def button(self, name: str, down: bool, x: int, y: int) -> None:
         root = self.display.screen().root
@@ -142,6 +146,24 @@ class XTestController:
         if number:
             self.xtest.fake_input(self.display, self.X.ButtonPress if down else self.X.ButtonRelease, number)
         self.display.flush()
+
+    def move(self, x: int, y: int) -> None:
+        self.display.screen().root.warp_pointer(x, y)
+        self.display.sync()
+
+    def release_button(self, name: str) -> None:
+        number = {"left": 1, "middle": 2, "right": 3}.get(name)
+        if number:
+            self.xtest.fake_input(self.display, self.X.ButtonRelease, number)
+            self.display.sync()
+
+    def scroll(self, x: int, y: int, delta_x: int, delta_y: int) -> None:
+        self.move(x, y)
+        for number, count in ((6 if delta_x < 0 else 7, abs(delta_x)), (4 if delta_y > 0 else 5, abs(delta_y))):
+            for _ in range(min(count, 100)):
+                self.xtest.fake_input(self.display, self.X.ButtonPress, number)
+                self.xtest.fake_input(self.display, self.X.ButtonRelease, number)
+        self.display.sync()
 
     def close(self) -> None:
         self.display.close()
@@ -153,7 +175,7 @@ class PynputController:
     KEY_NAMES = {
         "enter": "enter", "tab": "tab", "backspace": "backspace", "delete": "delete",
         "escape": "esc", "up": "up", "down": "down", "left": "left", "right": "right",
-        "ctrl": "ctrl",
+        "ctrl": "ctrl", "control": "ctrl", "shift": "shift", "alt": "alt", "meta": "cmd", "cmd": "cmd", "super": "cmd", "space": "space",
         "home": "home", "end": "end", "page_up": "page_up", "page_down": "page_down",
         "insert": "insert", "f1": "f1", "f2": "f2", "f3": "f3", "f4": "f4",
         "f5": "f5", "f6": "f6", "f7": "f7", "f8": "f8", "f9": "f9", "f10": "f10",
@@ -170,11 +192,12 @@ class PynputController:
             raise DesktopError(f"Cannot initialize desktop input: {exc}") from exc
 
     def key(self, name: str, down: bool) -> None:
-        key = getattr(self.Key, self.KEY_NAMES.get(name, ""), None)
+        key = getattr(self.Key, self.KEY_NAMES.get(name, name), None)
         if key is None and len(name) == 1:
             key = name
-        if key is not None:
-            (self.keyboard.press if down else self.keyboard.release)(key)
+        if key is None:
+            raise DesktopError(f"Unsupported keyboard key: {name}")
+        (self.keyboard.press if down else self.keyboard.release)(key)
 
     def button(self, name: str, down: bool, x: int, y: int) -> None:
         self.mouse.position = (x, y)
@@ -183,6 +206,20 @@ class PynputController:
             (self.mouse.press if down else self.mouse.release)(button)
         elif down and name in ("wheel_up", "wheel_down"):
             self.mouse.scroll(0, 1 if name == "wheel_up" else -1)
+
+    def move(self, x: int, y: int) -> None:
+        self.mouse.position = (x, y)
+
+    def scroll(self, x: int, y: int, delta_x: int, delta_y: int) -> None:
+        self.mouse.position = (x, y)
+        self.mouse.scroll(delta_x, delta_y)
+
+    def release_button(self, name: str) -> None:
+        button = {"left": self.Button.left, "middle": self.Button.middle, "right": self.Button.right}.get(name)
+        if button: self.mouse.release(button)
+
+    def type_text(self, text: str) -> None:
+        self.keyboard.type(text)
 
     def close(self) -> None:
         pass
